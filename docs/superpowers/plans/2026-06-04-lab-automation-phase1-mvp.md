@@ -1310,7 +1310,10 @@ def test_loaded_library_retains_dll_directory_handle():
 Create `tests/test_zolix_adapter.py`:
 
 ```python
+import pytest
+
 from lab_auto.devices.zolix_spectrometer import ZolixSpectrometer, direct_to_front_bool, front_bool_to_port
+from lab_auto.errors import DeviceError
 
 
 def test_direct_and_front_alias_map_to_true():
@@ -1360,17 +1363,26 @@ def test_adapter_exposes_phase1_cli_and_workflow_methods():
     ]
 
 
+def test_adapter_wraps_false_result_as_device_error():
+    raw = FakeZolixRaw(fail_actions={"set_grating"})
+    spec = ZolixSpectrometer(raw, device_id=7)
+
+    with pytest.raises(DeviceError, match="set_grating"):
+        spec.set_grating(1)
+
+
 class FakeZolixRaw:
-    def __init__(self):
+    def __init__(self, fail_actions=None):
         self.calls = []
+        self.fail_actions = fail_actions or set()
 
     def set_entrance_port(self, device_id: int, front: bool) -> bool:
         self.calls.append(("set_entrance_port", device_id, front))
-        return True
+        return "set_entrance_port" not in self.fail_actions
 
     def set_exit_port(self, device_id: int, front: bool) -> bool:
         self.calls.append(("set_exit_port", device_id, front))
-        return True
+        return "set_exit_port" not in self.fail_actions
 
     def get_status(self, device_id: int) -> dict:
         self.calls.append(("get_status", device_id))
@@ -1378,15 +1390,15 @@ class FakeZolixRaw:
 
     def set_grating(self, device_id: int, grating: int) -> bool:
         self.calls.append(("set_grating", device_id, grating))
-        return True
+        return "set_grating" not in self.fail_actions
 
     def move_to_wavelength_nm(self, device_id: int, wavelength_nm: float) -> bool:
         self.calls.append(("move_to_wavelength_nm", device_id, wavelength_nm))
-        return True
+        return "move_to_wavelength_nm" not in self.fail_actions
 
     def set_slit_width_um(self, device_id: int, width_um: int) -> bool:
         self.calls.append(("set_slit_width_um", device_id, width_um))
-        return True
+        return "set_slit_width_um" not in self.fail_actions
 
     def pixels_to_waves(self, device_id: int, *, turret: int, grating: int, center_wavelength_nm: float, width: int, count: int, bin_x: int) -> list[float]:
         self.calls.append(("pixels_to_waves", device_id, turret, grating, center_wavelength_nm, width, count, bin_x))
@@ -1531,7 +1543,13 @@ class ZolixRawClient:
 Create `src/lab_auto/devices/zolix_spectrometer.py`:
 
 ```python
-from lab_auto.errors import ConfigError
+from lab_auto.errors import ConfigError, DeviceError
+
+
+def require_ok(action: str, ok: bool) -> bool:
+    if not ok:
+        raise DeviceError(f"Zolix operation failed: {action}")
+    return True
 
 
 def direct_to_front_bool(port: str) -> bool:
@@ -1559,19 +1577,19 @@ class ZolixSpectrometer:
         return self.set_entrance_port(entrance_port) and self.set_exit_port(exit_port)
 
     def set_entrance_port(self, port: str) -> bool:
-        return self.raw.set_entrance_port(self.device_id, direct_to_front_bool(port))
+        return require_ok("set_entrance_port", self.raw.set_entrance_port(self.device_id, direct_to_front_bool(port)))
 
     def set_exit_port(self, port: str) -> bool:
-        return self.raw.set_exit_port(self.device_id, direct_to_front_bool(port))
+        return require_ok("set_exit_port", self.raw.set_exit_port(self.device_id, direct_to_front_bool(port)))
 
     def set_grating(self, grating: int) -> bool:
-        return self.raw.set_grating(self.device_id, grating)
+        return require_ok("set_grating", self.raw.set_grating(self.device_id, grating))
 
     def move_to_wavelength_nm(self, wavelength_nm: float) -> bool:
-        return self.raw.move_to_wavelength_nm(self.device_id, wavelength_nm)
+        return require_ok("move_to_wavelength_nm", self.raw.move_to_wavelength_nm(self.device_id, wavelength_nm))
 
     def set_slit_width_um(self, width_um: int) -> bool:
-        return self.raw.set_slit_width_um(self.device_id, width_um)
+        return require_ok("set_slit_width_um", self.raw.set_slit_width_um(self.device_id, width_um))
 
     def pixels_to_waves(
         self,
@@ -1605,7 +1623,7 @@ Run:
 pytest tests/test_zolix_ctypes.py tests/test_zolix_adapter.py -v
 ```
 
-Expected: all 9 tests PASS.
+Expected: all 10 tests PASS.
 
 - [ ] **Step 7: Commit Zolix boundary**
 
@@ -1675,7 +1693,10 @@ def test_loaded_library_retains_dll_directory_handle():
 Create `tests/test_dfield_camera.py`:
 
 ```python
+import pytest
+
 from lab_auto.devices.dfield_camera import DFieldCamera, gain_to_code, read_mode_to_code
+from lab_auto.errors import DeviceError
 
 
 def test_gain_mapping_matches_header():
@@ -1720,10 +1741,22 @@ def test_adapter_exposes_phase1_status_capture_and_csv(tmp_path):
     assert out.read_text(encoding="utf-8").splitlines()[0] == "pixel_index,intensity_raw,saturated"
 
 
+def test_adapter_does_not_write_csv_when_capture_fails(tmp_path):
+    raw = FakeDFieldRaw(fail_capture=True)
+    camera = DFieldCamera(raw)
+    out = tmp_path / "capture.csv"
+
+    with pytest.raises(DeviceError, match="capture failed"):
+        camera.capture_to_csv(mode="fvb", exposure_ms=1000, gain="low", out=out)
+
+    assert not out.exists()
+
+
 class FakeDFieldRaw:
-    def __init__(self):
+    def __init__(self, *, fail_capture=False):
         self.closed = False
         self.calls = []
+        self.fail_capture = fail_capture
 
     def status(self) -> dict:
         self.calls.append(("status",))
@@ -1731,6 +1764,8 @@ class FakeDFieldRaw:
 
     def capture(self, *, read_mode_code: int, exposure_ms: float, gain_code: int, frames: int) -> dict:
         self.calls.append(("capture", read_mode_code, exposure_ms, gain_code, frames))
+        if self.fail_capture:
+            raise DeviceError("DField capture failed")
         return {
             "width": 3,
             "height": 1,
@@ -1764,6 +1799,8 @@ import ctypes
 import os
 from dataclasses import dataclass
 from pathlib import Path
+
+from lab_auto.errors import DeviceError
 
 
 WindowsLong = ctypes.c_int32
@@ -1823,46 +1860,51 @@ class DFieldRawClient:
     def __init__(self, lib):
         self.lib = lib
 
+    def _require_ok(self, action: str, ok: bool) -> None:
+        if not ok:
+            raise DeviceError(f"DField operation failed: {action}")
+
     def status(self) -> dict:
         width = ctypes.c_int()
         height = ctypes.c_int()
-        self.lib.a4_get_detector_size(ctypes.byref(width), ctypes.byref(height))
+        self._require_ok("get_detector_size", self.lib.a4_get_detector_size(ctypes.byref(width), ctypes.byref(height)))
         return {"open": True, "width": width.value, "height": height.value}
 
     def capture(self, *, read_mode_code: int, exposure_ms: float, gain_code: int, frames: int) -> dict:
-        self.lib.a4_open()
-        self.lib.a4_set_exposure(ctypes.c_float(exposure_ms))
-        self.lib.a4_set_gain(gain_code)
-        self.lib.a4_set_read_mode(read_mode_code)
+        frame_count = max(int(frames), 1)
+        self._require_ok("open", self.lib.a4_open())
+        self._require_ok("set_exposure", self.lib.a4_set_exposure(ctypes.c_float(exposure_ms)))
+        self._require_ok("set_gain", self.lib.a4_set_gain(gain_code))
+        self._require_ok("set_read_mode", self.lib.a4_set_read_mode(read_mode_code))
         width = ctypes.c_int()
         height = ctypes.c_int()
         bin_x = ctypes.c_int()
         bin_y = ctypes.c_int()
-        roi_x = ctypes.c_int()
-        roi_y = ctypes.c_int()
-        roi_w = ctypes.c_int()
-        roi_h = ctypes.c_int()
-        self.lib.a4_get_detector_size(ctypes.byref(width), ctypes.byref(height))
-        self.lib.a4_get_bin(ctypes.byref(bin_x), ctypes.byref(bin_y))
-        self.lib.a4_get_roi(ctypes.byref(roi_x), ctypes.byref(roi_y), ctypes.byref(roi_w), ctypes.byref(roi_h))
-        capture_width = width.value // max(bin_x.value, 1)
-        capture_height = height.value // max(bin_y.value, 1)
+        col_from = ctypes.c_int()
+        col_to = ctypes.c_int()
+        row_from = ctypes.c_int()
+        row_to = ctypes.c_int()
+        self._require_ok("get_detector_size", self.lib.a4_get_detector_size(ctypes.byref(width), ctypes.byref(height)))
+        self._require_ok("get_bin", self.lib.a4_get_bin(ctypes.byref(bin_x), ctypes.byref(bin_y)))
+        self._require_ok("get_roi", self.lib.a4_get_roi(ctypes.byref(col_from), ctypes.byref(col_to), ctypes.byref(row_from), ctypes.byref(row_to)))
+        roi_width = col_to.value - col_from.value if col_to.value > col_from.value else width.value
+        roi_height = row_to.value - row_from.value if row_to.value > row_from.value else height.value
+        capture_width = roi_width // max(bin_x.value, 1)
+        capture_height = roi_height // max(bin_y.value, 1)
         size = capture_width if read_mode_code == 0 else capture_width * capture_height
-        buffer = windows_long_array(size)
-        ok = self.lib.a4_single_capture(buffer, size)
-        if not ok:
-            return {
-                "width": width.value,
-                "height": height.value,
-                "bin_x": bin_x.value,
-                "bin_y": bin_y.value,
-                "roi": None,
-                "values": [],
-                "saturated": [],
-            }
-        values = [int(buffer[index]) for index in range(size)]
-        saturated = [value >= 65535 for value in values]
-        roi = None if (roi_w.value == 0 or roi_h.value == 0) else (roi_x.value, roi_y.value, roi_w.value, roi_h.value)
+        if size <= 0:
+            raise DeviceError("DField capture size is zero")
+        totals = [0 for _ in range(size)]
+        saturated = [False for _ in range(size)]
+        for _ in range(frame_count):
+            buffer = windows_long_array(size)
+            self._require_ok("single_capture", self.lib.a4_single_capture(buffer, size))
+            for index in range(size):
+                value = int(buffer[index])
+                totals[index] += value
+                saturated[index] = saturated[index] or value >= 65535
+        values = [round(total / frame_count) for total in totals]
+        roi = None if (col_to.value <= col_from.value or row_to.value <= row_from.value) else (col_from.value, col_to.value, row_from.value, row_to.value)
         return {
             "width": width.value,
             "height": height.value,
@@ -1955,7 +1997,7 @@ Run:
 pytest tests/test_dfield_ctypes.py tests/test_dfield_camera.py -v
 ```
 
-Expected: all 7 tests PASS.
+Expected: all 8 tests PASS.
 
 - [ ] **Step 7: Commit DField boundary**
 
@@ -2117,6 +2159,7 @@ from pathlib import Path
 import json
 
 from lab_auto.config import AcquisitionConfig, OpticsConfig, OutputConfig, SampleConfig, WorkflowConfig
+from lab_auto.workflow.data import CaptureFrame
 from lab_auto.workflow.raman import RamanWorkflow
 
 
@@ -2178,6 +2221,45 @@ def test_single_workflow_writes_core_outputs(tmp_path):
     assert (run_dir / "raw.csv").exists()
     assert (run_dir / "corrected.csv").exists()
     assert (run_dir / "run.log").exists()
+
+
+def test_single_workflow_records_axis_fallback_and_saturation_warnings(tmp_path):
+    workflow = RamanWorkflow.simulated(workflow_config(tmp_path))
+    workflow.spectrometer = NoCalibrationSpectrometer()
+    workflow.camera = SaturatedCamera()
+
+    run_dir = workflow.run_single_point(require_confirmation=False)
+
+    metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
+    raw_lines = (run_dir / "raw.csv").read_text(encoding="utf-8").splitlines()
+    assert metadata["x_axis_type"] == "pixel_index"
+    assert "wavelength calibration unavailable; using pixel_index" in metadata["warnings"]
+    assert "saturated pixels detected" in metadata["warnings"]
+    assert raw_lines[0] == "pixel_index,intensity_raw,saturated"
+    assert raw_lines[1].endswith(",true")
+
+
+class NoCalibrationSpectrometer:
+    def pixels_to_waves(self, **kwargs):
+        return []
+
+
+class SaturatedCamera:
+    def capture(self, *, read_mode: str, exposure_ms: float, gain: str, frames: int) -> CaptureFrame:
+        return CaptureFrame(
+            read_mode=read_mode,
+            width=2,
+            height=1,
+            bin_x=1,
+            bin_y=1,
+            roi=None,
+            exposure_ms=exposure_ms,
+            gain=gain,
+            values=[65535, 100],
+            saturated_count=1,
+            saturated=[True, False],
+            metadata={"frames": frames},
+        )
 ```
 
 - [ ] **Step 2: Run workflow tests to verify workflow missing**
@@ -2260,6 +2342,7 @@ class RamanWorkflow:
 
     def _frame_to_spectrum(self, frame: CaptureFrame, *, values: list[int] | None = None) -> SpectrumData:
         source_values = frame.values if values is None else values
+        warnings: list[str] = []
         x = self.spectrometer.pixels_to_waves(
             turret=0,
             grating=self.config.optics.grating,
@@ -2273,6 +2356,10 @@ class RamanWorkflow:
         else:
             x_axis_type = "pixel_index"
             x = list(range(len(source_values)))
+            warnings.append("wavelength calibration unavailable; using pixel_index")
+        saturated = frame.saturated if len(frame.saturated) == len(source_values) else [False for _ in source_values]
+        if any(saturated):
+            warnings.append("saturated pixels detected")
         metadata = {
             "read_mode": self.config.acquisition.read_mode,
             "bin_x": frame.bin_x,
@@ -2283,6 +2370,7 @@ class RamanWorkflow:
             "grating": self.config.optics.grating,
             "center_wavelength_nm": self.config.optics.center_wavelength_nm,
             "slit_width_um": self.config.optics.slit_width_um,
+            "warnings": warnings,
         }
         return SpectrumData(
             x_axis_type=x_axis_type,
@@ -2290,7 +2378,7 @@ class RamanWorkflow:
             intensity_raw=[float(value) for value in source_values],
             intensity_background=None,
             intensity_corrected=None,
-            saturated=[False for _ in source_values],
+            saturated=saturated,
             metadata=metadata,
         )
 
@@ -2312,6 +2400,7 @@ class RamanWorkflow:
         background = self._frame_to_spectrum(background_frame, values=[100 for _ in background_frame.values])
         raw = self._frame_to_spectrum(sample_frame)
         corrected = subtract_background(raw, background)
+        warnings = list(dict.fromkeys(background.metadata.get("warnings", []) + raw.metadata.get("warnings", [])))
         self._write_raw(run_dir / "raw.csv", raw)
         self._write_background(run_dir / "background.csv", background)
         self._write_corrected(run_dir / "corrected.csv", corrected)
@@ -2335,15 +2424,15 @@ class RamanWorkflow:
                         "gain": self.config.acquisition.gain,
                         "read_mode": self.config.acquisition.read_mode,
                         "frames": self.config.acquisition.frames,
-                        "bin_x": 1,
-                        "bin_y": 1,
-                        "roi": None,
+                        "bin_x": sample_frame.bin_x,
+                        "bin_y": sample_frame.bin_y,
+                        "roi": sample_frame.roi,
                     },
                     "background_subtraction": {
                         "enabled": self.config.acquisition.subtract_background,
                         "wavelength_tolerance_nm": 1e-6,
                     },
-                    "warnings": [],
+                    "warnings": warnings,
                     "errors": [],
                 },
                 indent=2,
