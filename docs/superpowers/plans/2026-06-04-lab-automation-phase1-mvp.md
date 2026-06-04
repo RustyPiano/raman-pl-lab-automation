@@ -77,6 +77,7 @@ Responsibilities:
 - Make one commit per task.
 - Run the task-specific tests before each commit.
 - Keep real hardware commands guarded by `--real`.
+- Keep committed example configs self-contained: `configs/single_point.example.yaml` must reference `configs/devices.example.yaml`; lab-local real config is supplied with `--devices-config configs/devices.real.yaml`.
 - Do not create `workflow/mapping.py`, `agent/tool_schema.py`, daemon/session code, or real light-controller integration in Phase 1.
 
 ---
@@ -149,7 +150,7 @@ def test_workflow_config_links_devices_config(tmp_path: Path):
     path = tmp_path / "single_point.yaml"
     path.write_text(
         """
-devices_config: configs/devices.yaml
+devices_config: configs/devices.example.yaml
 sample: {id: sample-001, operator: lab}
 optics:
   entrance_port: side
@@ -172,7 +173,7 @@ output:
 
     config = load_workflow_config(path)
 
-    assert config.devices_config == Path("configs/devices.yaml")
+    assert config.devices_config == Path("configs/devices.example.yaml")
     assert config.optics.entrance_port == "side"
     assert config.optics.exit_port == "direct"
     assert config.acquisition.gain == "low"
@@ -201,7 +202,7 @@ light: {type: manual, manual_light_control: true}
     workflow = tmp_path / "single_point.yaml"
     workflow.write_text(
         """
-devices_config: configs/devices.yaml
+devices_config: configs/devices.example.yaml
 sample: {id: sample-001, operator: lab}
 optics: {entrance_port: side, exit_port: direct, grating: 1, center_wavelength_nm: 600, slit_width_um: 100}
 acquisition: {exposure_ms: 1000, gain: low, read_mode: fvb, frames: 1, subtract_background: true}
@@ -563,7 +564,7 @@ light:
 Create `configs/single_point.example.yaml`:
 
 ```yaml
-devices_config: configs/devices.yaml
+devices_config: configs/devices.example.yaml
 
 sample:
   id: sample-001
@@ -1061,6 +1062,18 @@ def test_known_axis_uses_soft_limits(tmp_path):
         stage.move_relative(axis="x", um=10, speed=8)
 
 
+def test_home_marks_axis_homed_after_success(tmp_path):
+    protocol = FakeStageProtocol()
+    ledger = PositionLedger()
+    stage = WaynelabsStage(config(tmp_path), transport=None, dry_run=True, ledger=ledger, protocol=protocol)
+
+    actions = stage.home(axis="x", direction="negative", speed=8)
+
+    assert actions == ["encoded-home"]
+    assert ledger.states["x"] is AxisState.HOMED
+    assert ledger.position_um["x"] == 0.0
+
+
 class FakeStageProtocol:
     def __init__(self):
         self.moves = []
@@ -1071,6 +1084,9 @@ class FakeStageProtocol:
     def build_move_command(self, *, axis: str, steps: int, speed: int, direction: str) -> str:
         self.moves.append({"axis": axis, "steps": steps, "speed": speed, "direction": direction})
         return "encoded-move"
+
+    def build_home_command(self, *, axis: str, speed: int, direction: str) -> str:
+        return "encoded-home"
 ```
 
 - [ ] **Step 2: Run safety tests to verify adapter missing**
@@ -1157,6 +1173,13 @@ class WaynelabsStage:
             if new_position < low or new_position > high:
                 raise SafetyError(f"move exceeds soft limit for axis {axis}")
 
+    def _send_command(self, command: str) -> None:
+        if self.dry_run or self.transport is None:
+            return
+        self.transport.write(command.encode("ascii"))
+        response = self.transport.readline().decode("ascii", errors="replace")
+        self.protocol.parse_completion(response)
+
     def move_relative(self, *, axis: str, um: float, speed: int) -> list[str]:
         self._assert_safe_move(axis, um)
         direction = self._direction_for_um(um)
@@ -1164,10 +1187,19 @@ class WaynelabsStage:
             self.protocol.build_move_command(axis=axis, steps=chunk, speed=speed, direction=direction)
             for chunk in self.protocol.split_steps(self._steps_for_um(axis, um))
         ]
-        if not self.dry_run and self.transport is not None:
-            for command in commands:
-                self.transport.write(command)
+        for command in commands:
+            self._send_command(command)
         return commands
+
+    def identify(self) -> dict:
+        return {"type": self.config.type, "port": self.config.port}
+
+    def home(self, *, axis: str, direction: str, speed: int) -> list[str]:
+        command = self.protocol.build_home_command(axis=axis, speed=speed, direction=direction)
+        self._send_command(command)
+        self.ledger.states[axis] = AxisState.HOMED
+        self.ledger.position_um[axis] = 0.0
+        return [command]
 
     def close(self) -> None:
         if self.transport is not None:
@@ -1182,7 +1214,7 @@ Run:
 pytest tests/test_stage_safety.py -v
 ```
 
-Expected: all 3 tests PASS.
+Expected: all 4 tests PASS.
 
 - [ ] **Step 5: Commit stage adapter**
 
@@ -1208,7 +1240,7 @@ Create `tests/test_zolix_ctypes.py`:
 ```python
 import ctypes
 
-from lab_auto.devices.raw.zolix_ctypes import configure_signatures
+from lab_auto.devices.raw.zolix_ctypes import LoadedLibrary, configure_signatures
 
 
 class FakeLibrary:
@@ -1250,6 +1282,16 @@ def test_configures_usb_mode_as_void_return():
 
     assert lib.spec_set_usb_mode.argtypes == [ctypes.c_bool]
     assert lib.spec_set_usb_mode.restype is None
+
+
+def test_loaded_library_retains_dll_directory_handle():
+    handle = object()
+    lib = FakeLibrary()
+
+    loaded = LoadedLibrary(lib=lib, dll_directory_handle=handle)
+
+    assert loaded.dll_directory_handle is handle
+    assert loaded.lib is lib
 ```
 
 - [ ] **Step 2: Write adapter enum tests**
@@ -1257,7 +1299,7 @@ def test_configures_usb_mode_as_void_return():
 Create `tests/test_zolix_adapter.py`:
 
 ```python
-from lab_auto.devices.zolix_spectrometer import direct_to_front_bool, front_bool_to_port
+from lab_auto.devices.zolix_spectrometer import ZolixSpectrometer, direct_to_front_bool, front_bool_to_port
 
 
 def test_direct_and_front_alias_map_to_true():
@@ -1283,6 +1325,30 @@ def test_adapter_calls_raw_client_not_native_symbols():
     assert raw.calls == [("set_entrance_port", 7, False)]
 
 
+def test_adapter_exposes_phase1_cli_and_workflow_methods():
+    raw = FakeZolixRaw()
+    spec = ZolixSpectrometer(raw, device_id=7)
+
+    assert spec.status()["device_id"] == 7
+    assert spec.initialize(entrance_port="side", exit_port="direct") is True
+    assert spec.set_grating(1) is True
+    assert spec.move_to_wavelength_nm(600.0) is True
+    assert spec.set_slit_width_um(100) is True
+    assert spec.pixels_to_waves(center_wavelength_nm=600.0, count=3) == [599.99, 600.0, 600.01]
+    spec.close()
+
+    assert raw.calls == [
+        ("get_status", 7),
+        ("set_entrance_port", 7, False),
+        ("set_exit_port", 7, True),
+        ("set_grating", 7, 1),
+        ("move_to_wavelength_nm", 7, 600.0),
+        ("set_slit_width_um", 7, 100),
+        ("pixels_to_waves", 7, 600.0, 3),
+        ("close", 7),
+    ]
+
+
 class FakeZolixRaw:
     def __init__(self):
         self.calls = []
@@ -1294,6 +1360,29 @@ class FakeZolixRaw:
     def set_exit_port(self, device_id: int, front: bool) -> bool:
         self.calls.append(("set_exit_port", device_id, front))
         return True
+
+    def get_status(self, device_id: int) -> dict:
+        self.calls.append(("get_status", device_id))
+        return {"device_id": device_id, "dll_version": "fake"}
+
+    def set_grating(self, device_id: int, grating: int) -> bool:
+        self.calls.append(("set_grating", device_id, grating))
+        return True
+
+    def move_to_wavelength_nm(self, device_id: int, wavelength_nm: float) -> bool:
+        self.calls.append(("move_to_wavelength_nm", device_id, wavelength_nm))
+        return True
+
+    def set_slit_width_um(self, device_id: int, width_um: int) -> bool:
+        self.calls.append(("set_slit_width_um", device_id, width_um))
+        return True
+
+    def pixels_to_waves(self, device_id: int, *, center_wavelength_nm: float, count: int) -> list[float]:
+        self.calls.append(("pixels_to_waves", device_id, center_wavelength_nm, count))
+        return [599.99, 600.0, 600.01]
+
+    def close(self, device_id: int) -> None:
+        self.calls.append(("close", device_id))
 ```
 
 - [ ] **Step 3: Run Zolix tests to verify modules missing**
@@ -1313,16 +1402,31 @@ Create `src/lab_auto/devices/raw/zolix_ctypes.py`:
 ```python
 import ctypes
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
+from lab_auto.errors import DeviceError
 
-def load_library(dll_path: Path):
+
+@dataclass(frozen=True)
+class LoadedLibrary:
+    lib: object
+    dll_directory_handle: object | None = None
+
+    def __getattr__(self, name: str):
+        return getattr(self.lib, name)
+
+
+def load_library(dll_path: Path) -> LoadedLibrary:
     dll_path = Path(dll_path)
+    dll_directory_handle = None
     if hasattr(os, "add_dll_directory"):
-        os.add_dll_directory(str(dll_path.parent))
+        dll_directory_handle = os.add_dll_directory(str(dll_path.parent))
     if hasattr(ctypes, "WinDLL"):
-        return ctypes.WinDLL(str(dll_path))
-    return ctypes.CDLL(str(dll_path))
+        lib = ctypes.WinDLL(str(dll_path))
+    else:
+        lib = ctypes.CDLL(str(dll_path))
+    return LoadedLibrary(lib=lib, dll_directory_handle=dll_directory_handle)
 
 
 def _maybe_configure(lib, name: str, argtypes, restype) -> None:
@@ -1357,11 +1461,48 @@ class ZolixRawClient:
     def __init__(self, lib):
         self.lib = lib
 
+    def open_first_device(self) -> int:
+        count = int(self.lib.spec_enum_dev_count())
+        if count < 1:
+            raise DeviceError("no Zolix spectrometer found")
+        serial_number = ctypes.create_string_buffer(128)
+        if not self.lib.spec_enum_dev_sn(0, serial_number, len(serial_number)):
+            raise DeviceError("failed to read Zolix serial number")
+        device_id = int(self.lib.spec_open(serial_number.value))
+        if device_id < 0:
+            raise DeviceError("failed to open Zolix spectrometer")
+        return device_id
+
+    def get_status(self, device_id: int) -> dict:
+        version = ctypes.create_string_buffer(128)
+        if hasattr(self.lib, "spec_get_dll_ver"):
+            self.lib.spec_get_dll_ver(version, len(version))
+        return {"device_id": device_id, "dll_version": version.value.decode(errors="replace")}
+
     def set_entrance_port(self, device_id: int, front: bool) -> bool:
         return bool(self.lib.spec_set_entrance_port(device_id, front))
 
     def set_exit_port(self, device_id: int, front: bool) -> bool:
         return bool(self.lib.spec_set_exit_port(device_id, front))
+
+    def set_grating(self, device_id: int, grating: int) -> bool:
+        return bool(self.lib.spec_set_grating(device_id, grating))
+
+    def move_to_wavelength_nm(self, device_id: int, wavelength_nm: float) -> bool:
+        return bool(self.lib.spec_move_to_wave(device_id, ctypes.c_float(wavelength_nm)))
+
+    def set_slit_width_um(self, device_id: int, width_um: int) -> bool:
+        return bool(self.lib.spec_set_slit_width(device_id, 0, width_um))
+
+    def pixels_to_waves(self, device_id: int, *, center_wavelength_nm: float, count: int) -> list[float]:
+        values = (ctypes.c_float * count)()
+        ok = self.lib.spec_pixels_to_waves(device_id, 0, count, ctypes.c_float(center_wavelength_nm), 0, 0, 0, values)
+        if not ok:
+            return []
+        return [float(values[index]) for index in range(count)]
+
+    def close(self, device_id: int) -> None:
+        self.lib.spec_close(device_id)
 ```
 
 - [ ] **Step 5: Implement clean adapter helpers**
@@ -1390,11 +1531,32 @@ class ZolixSpectrometer:
         self.raw = raw
         self.device_id = device_id
 
+    def status(self) -> dict:
+        return self.raw.get_status(self.device_id)
+
+    def initialize(self, *, entrance_port: str, exit_port: str) -> bool:
+        return self.set_entrance_port(entrance_port) and self.set_exit_port(exit_port)
+
     def set_entrance_port(self, port: str) -> bool:
         return self.raw.set_entrance_port(self.device_id, direct_to_front_bool(port))
 
     def set_exit_port(self, port: str) -> bool:
         return self.raw.set_exit_port(self.device_id, direct_to_front_bool(port))
+
+    def set_grating(self, grating: int) -> bool:
+        return self.raw.set_grating(self.device_id, grating)
+
+    def move_to_wavelength_nm(self, wavelength_nm: float) -> bool:
+        return self.raw.move_to_wavelength_nm(self.device_id, wavelength_nm)
+
+    def set_slit_width_um(self, width_um: int) -> bool:
+        return self.raw.set_slit_width_um(self.device_id, width_um)
+
+    def pixels_to_waves(self, *, center_wavelength_nm: float, count: int) -> list[float]:
+        return self.raw.pixels_to_waves(self.device_id, center_wavelength_nm=center_wavelength_nm, count=count)
+
+    def close(self) -> None:
+        self.raw.close(self.device_id)
 ```
 
 - [ ] **Step 6: Run Zolix tests**
@@ -1405,7 +1567,7 @@ Run:
 pytest tests/test_zolix_ctypes.py tests/test_zolix_adapter.py -v
 ```
 
-Expected: all 7 tests PASS.
+Expected: all 9 tests PASS.
 
 - [ ] **Step 7: Commit Zolix boundary**
 
@@ -1431,7 +1593,7 @@ Create `tests/test_dfield_ctypes.py`:
 ```python
 import ctypes
 
-from lab_auto.devices.raw.dfield_ctypes import configure_signatures, windows_long_array
+from lab_auto.devices.raw.dfield_ctypes import LoadedLibrary, configure_signatures, windows_long_array
 
 
 class FakeLibrary:
@@ -1458,6 +1620,16 @@ def test_capture_uses_windows_32bit_long_buffer():
     arr = windows_long_array(3)
 
     assert ctypes.sizeof(arr._type_) == 4
+
+
+def test_loaded_library_retains_dll_directory_handle():
+    handle = object()
+    lib = FakeLibrary()
+
+    loaded = LoadedLibrary(lib=lib, dll_directory_handle=handle)
+
+    assert loaded.dll_directory_handle is handle
+    assert loaded.lib is lib
 ```
 
 - [ ] **Step 2: Write DField adapter tests**
@@ -1465,7 +1637,7 @@ def test_capture_uses_windows_32bit_long_buffer():
 Create `tests/test_dfield_camera.py`:
 
 ```python
-from lab_auto.devices.dfield_camera import gain_to_code, read_mode_to_code
+from lab_auto.devices.dfield_camera import DFieldCamera, gain_to_code, read_mode_to_code
 
 
 def test_gain_mapping_matches_header():
@@ -1487,9 +1659,36 @@ def test_adapter_close_calls_raw_client_not_native_symbol():
     assert raw.closed is True
 
 
+def test_adapter_exposes_phase1_status_capture_and_csv(tmp_path):
+    raw = FakeDFieldRaw()
+    camera = DFieldCamera(raw)
+    out = tmp_path / "capture.csv"
+
+    assert camera.status() == {"open": True, "width": 3, "height": 1}
+    frame = camera.capture(read_mode="fvb", exposure_ms=1000, gain="low", frames=1)
+    camera.capture_to_csv(mode="fvb", exposure_ms=1000, gain="low", out=out)
+
+    assert frame.values == [100, 101, 102]
+    assert raw.calls == [
+        ("status",),
+        ("capture", 0, 1000, 1, 1),
+        ("capture", 0, 1000, 1, 1),
+    ]
+    assert out.read_text(encoding="utf-8").splitlines()[0] == "pixel_index,intensity_raw,saturated"
+
+
 class FakeDFieldRaw:
     def __init__(self):
         self.closed = False
+        self.calls = []
+
+    def status(self) -> dict:
+        self.calls.append(("status",))
+        return {"open": True, "width": 3, "height": 1}
+
+    def capture(self, *, read_mode_code: int, exposure_ms: float, gain_code: int, frames: int) -> tuple[list[int], list[bool]]:
+        self.calls.append(("capture", read_mode_code, exposure_ms, gain_code, frames))
+        return [100, 101, 102], [False, False, False]
 
     def close(self) -> None:
         self.closed = True
@@ -1512,23 +1711,36 @@ Create `src/lab_auto/devices/raw/dfield_ctypes.py`:
 ```python
 import ctypes
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 
 WindowsLong = ctypes.c_int32
 
 
+@dataclass(frozen=True)
+class LoadedLibrary:
+    lib: object
+    dll_directory_handle: object | None = None
+
+    def __getattr__(self, name: str):
+        return getattr(self.lib, name)
+
+
 def windows_long_array(size: int):
     return (WindowsLong * size)()
 
 
-def load_library(dll_path: Path):
+def load_library(dll_path: Path) -> LoadedLibrary:
     dll_path = Path(dll_path)
+    dll_directory_handle = None
     if hasattr(os, "add_dll_directory"):
-        os.add_dll_directory(str(dll_path.parent))
+        dll_directory_handle = os.add_dll_directory(str(dll_path.parent))
     if hasattr(ctypes, "WinDLL"):
-        return ctypes.WinDLL(str(dll_path))
-    return ctypes.CDLL(str(dll_path))
+        lib = ctypes.WinDLL(str(dll_path))
+    else:
+        lib = ctypes.CDLL(str(dll_path))
+    return LoadedLibrary(lib=lib, dll_directory_handle=dll_directory_handle)
 
 
 def _maybe_configure(lib, name: str, argtypes, restype) -> None:
@@ -1560,6 +1772,29 @@ class DFieldRawClient:
     def __init__(self, lib):
         self.lib = lib
 
+    def status(self) -> dict:
+        width = ctypes.c_int()
+        height = ctypes.c_int()
+        self.lib.a4_get_detector_size(ctypes.byref(width), ctypes.byref(height))
+        return {"open": True, "width": width.value, "height": height.value}
+
+    def capture(self, *, read_mode_code: int, exposure_ms: float, gain_code: int, frames: int) -> tuple[list[int], list[bool]]:
+        self.lib.a4_open()
+        self.lib.a4_set_exposure(ctypes.c_float(exposure_ms))
+        self.lib.a4_set_gain(gain_code)
+        self.lib.a4_set_read_mode(read_mode_code)
+        width = ctypes.c_int()
+        height = ctypes.c_int()
+        self.lib.a4_get_detector_size(ctypes.byref(width), ctypes.byref(height))
+        size = width.value if read_mode_code == 0 else width.value * height.value
+        buffer = windows_long_array(size)
+        ok = self.lib.a4_single_capture(buffer, size)
+        if not ok:
+            return [], []
+        values = [int(buffer[index]) for index in range(size)]
+        saturated = [value >= 65535 for value in values]
+        return values, saturated
+
     def close(self) -> None:
         self.lib.a4_close()
 ```
@@ -1569,7 +1804,11 @@ class DFieldRawClient:
 Create `src/lab_auto/devices/dfield_camera.py`:
 
 ```python
+import csv
+from pathlib import Path
+
 from lab_auto.errors import ConfigError
+from lab_auto.workflow.data import CaptureFrame
 
 
 def gain_to_code(gain: str) -> int:
@@ -1592,6 +1831,35 @@ class DFieldCamera:
     def __init__(self, raw):
         self.raw = raw
 
+    def status(self) -> dict:
+        return self.raw.status()
+
+    def capture(self, *, read_mode: str, exposure_ms: float, gain: str, frames: int) -> CaptureFrame:
+        values, saturated = self.raw.capture(
+            read_mode_code=read_mode_to_code(read_mode),
+            exposure_ms=exposure_ms,
+            gain_code=gain_to_code(gain),
+            frames=frames,
+        )
+        return CaptureFrame(
+            read_mode=read_mode,
+            exposure_ms=exposure_ms,
+            gain=gain,
+            values=values,
+            saturated_count=sum(1 for value in saturated if value),
+            saturated=saturated,
+            metadata={"frames": frames},
+        )
+
+    def capture_to_csv(self, *, mode: str, exposure_ms: float, gain: str, out: Path) -> None:
+        frame = self.capture(read_mode=mode, exposure_ms=exposure_ms, gain=gain, frames=1)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with out.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["pixel_index", "intensity_raw", "saturated"])
+            for index, (value, saturated) in enumerate(zip(frame.values, frame.saturated, strict=True)):
+                writer.writerow([index, value, str(saturated).lower()])
+
     def close(self) -> None:
         self.raw.close()
 ```
@@ -1604,7 +1872,7 @@ Run:
 pytest tests/test_dfield_ctypes.py tests/test_dfield_camera.py -v
 ```
 
-Expected: all 5 tests PASS.
+Expected: all 7 tests PASS.
 
 - [ ] **Step 7: Commit DField boundary**
 
@@ -1771,7 +2039,7 @@ from lab_auto.workflow.raman import RamanWorkflow
 
 def workflow_config(tmp_path: Path):
     return WorkflowConfig(
-        devices_config=Path("configs/devices.yaml"),
+        devices_config=Path("configs/devices.example.yaml"),
         sample=SampleConfig(id="sample-001", operator="lab"),
         optics=OpticsConfig(
             entrance_port="side",
@@ -2060,7 +2328,7 @@ from lab_auto.cli import main
 def write_workflow_config(path: Path, output_dir: Path):
     path.write_text(
         f"""
-devices_config: configs/devices.yaml
+devices_config: configs/devices.example.yaml
 sample: {{id: sample-001, operator: lab}}
 optics:
   entrance_port: side
@@ -2386,6 +2654,31 @@ light: {type: manual, manual_light_control: true}
     )
 
 
+def test_devices_doctor_real_uses_factory(tmp_path):
+    devices = tmp_path / "devices.real.yaml"
+    write_devices_config(devices)
+    factory = FakeDeviceFactory()
+
+    exit_code = main(["devices", "doctor", "--config", str(devices), "--real"], factory=factory)
+
+    assert exit_code == 0
+    assert factory.calls == [("run_doctor", "COM5")]
+
+
+def test_stage_identify_and_home_real_use_factory_adapter(tmp_path):
+    devices = tmp_path / "devices.real.yaml"
+    write_devices_config(devices)
+    factory = FakeDeviceFactory()
+
+    assert main(["stage", "identify", "--config", str(devices), "--real"], factory=factory) == 0
+    assert main(
+        ["stage", "home", "--config", str(devices), "--real", "--axis", "x", "--direction", "negative", "--speed", "8", "--yes"],
+        factory=factory,
+    ) == 0
+
+    assert factory.stage.calls == [("identify",), ("home", "x", "negative", 8)]
+
+
 def test_stage_move_real_uses_factory_adapter(tmp_path, capsys):
     devices = tmp_path / "devices.real.yaml"
     write_devices_config(devices)
@@ -2399,6 +2692,20 @@ def test_stage_move_real_uses_factory_adapter(tmp_path, capsys):
     assert exit_code == 0
     assert factory.stage.calls == [("move_relative", "x", 10.0, 8)]
     assert "stage_move_complete" in capsys.readouterr().out
+
+
+def test_spec_status_and_init_real_use_factory_adapter(tmp_path):
+    devices = tmp_path / "devices.real.yaml"
+    write_devices_config(devices)
+    factory = FakeDeviceFactory()
+
+    assert main(["spec", "status", "--config", str(devices), "--real"], factory=factory) == 0
+    assert main(["spec", "init", "--config", str(devices), "--real", "--entrance", "side", "--exit", "direct"], factory=factory) == 0
+
+    assert factory.spectrometer.calls == [
+        ("status",),
+        ("initialize", "side", "direct"),
+    ]
 
 
 def test_spec_set_real_uses_factory_adapter(tmp_path):
@@ -2419,6 +2726,17 @@ def test_spec_set_real_uses_factory_adapter(tmp_path):
     ]
 
 
+def test_camera_status_real_uses_factory_adapter(tmp_path):
+    devices = tmp_path / "devices.real.yaml"
+    write_devices_config(devices)
+    factory = FakeDeviceFactory()
+
+    exit_code = main(["camera", "status", "--config", str(devices), "--real"], factory=factory)
+
+    assert exit_code == 0
+    assert factory.camera.calls == [("status",)]
+
+
 def test_camera_capture_real_uses_factory_adapter(tmp_path):
     devices = tmp_path / "devices.real.yaml"
     out = tmp_path / "capture.csv"
@@ -2436,9 +2754,14 @@ def test_camera_capture_real_uses_factory_adapter(tmp_path):
 
 class FakeDeviceFactory:
     def __init__(self):
+        self.calls = []
         self.stage = FakeStage()
         self.spectrometer = FakeSpectrometer()
         self.camera = FakeCamera()
+
+    def run_doctor(self, devices_config):
+        self.calls.append(("run_doctor", devices_config.stage.port))
+        return {"python_64bit": True}
 
     def create_stage(self, devices_config):
         return self.stage
@@ -2454,13 +2777,30 @@ class FakeStage:
     def __init__(self):
         self.calls = []
 
+    def identify(self):
+        self.calls.append(("identify",))
+        return {"type": "waynelabs_linear", "port": "COM5"}
+
+    def home(self, *, axis: str, direction: str, speed: int):
+        self.calls.append(("home", axis, direction, speed))
+
     def move_relative(self, *, axis: str, um: float, speed: int):
         self.calls.append(("move_relative", axis, um, speed))
+
+    def close(self):
+        pass
 
 
 class FakeSpectrometer:
     def __init__(self):
         self.calls = []
+
+    def status(self):
+        self.calls.append(("status",))
+        return {"device_id": 7}
+
+    def initialize(self, *, entrance_port: str, exit_port: str):
+        self.calls.append(("initialize", entrance_port, exit_port))
 
     def set_grating(self, grating: int):
         self.calls.append(("set_grating", grating))
@@ -2471,13 +2811,23 @@ class FakeSpectrometer:
     def set_slit_width_um(self, width_um: int):
         self.calls.append(("set_slit_width_um", width_um))
 
+    def close(self):
+        pass
+
 
 class FakeCamera:
     def __init__(self):
         self.calls = []
 
+    def status(self):
+        self.calls.append(("status",))
+        return {"open": True}
+
     def capture_to_csv(self, *, mode: str, exposure_ms: float, gain: str, out: Path):
         self.calls.append(("capture_to_csv", mode, exposure_ms, gain, out))
+
+    def close(self):
+        pass
 ```
 
 - [ ] **Step 2: Run real-mode CLI tests to verify factory missing**
@@ -2490,24 +2840,78 @@ pytest tests/test_hardware_cli.py -v
 
 Expected: FAIL with `TypeError: main() got an unexpected keyword argument 'factory'`.
 
-- [ ] **Step 3: Create device factory shell**
+- [ ] **Step 3: Create real device factory composition**
 
 Create `src/lab_auto/devices/factory.py`:
 
 ```python
+import platform
+from pathlib import Path
+
+import serial
+
 from lab_auto.config import DevicesConfig
-from lab_auto.errors import DeviceError
+from lab_auto.devices.dfield_camera import DFieldCamera
+from lab_auto.devices.raw.dfield_ctypes import DFieldRawClient, configure_signatures as configure_dfield_signatures, load_library as load_dfield_library
+from lab_auto.devices.raw.zolix_ctypes import ZolixRawClient, configure_signatures as configure_zolix_signatures, load_library as load_zolix_library
+from lab_auto.devices.waynelabs_stage import WaynelabsStage
+from lab_auto.devices.zolix_spectrometer import ZolixSpectrometer
+
+
+def _path_exists(path: Path) -> bool:
+    return Path(path).exists()
 
 
 class DeviceFactory:
-    def create_stage(self, devices_config: DevicesConfig):
-        raise DeviceError("real WayneLabs stage transport is not configured in this environment")
+    def _can_load_zolix(self, dll_path: Path) -> bool:
+        try:
+            loaded = load_zolix_library(dll_path)
+            configure_zolix_signatures(loaded)
+            return True
+        except OSError:
+            return False
 
-    def create_spectrometer(self, devices_config: DevicesConfig):
-        raise DeviceError("real Zolix spectrometer DLL is not configured in this environment")
+    def _can_load_dfield(self, dll_path: Path) -> bool:
+        try:
+            loaded = load_dfield_library(dll_path)
+            configure_dfield_signatures(loaded)
+            return True
+        except OSError:
+            return False
 
-    def create_camera(self, devices_config: DevicesConfig):
-        raise DeviceError("real DField camera DLL is not configured in this environment")
+    def run_doctor(self, devices_config: DevicesConfig) -> dict:
+        zolix_dll = devices_config.spectrometer.dll_path
+        dfield_dll = devices_config.camera.dll_path
+        return {
+            "python_64bit": platform.architecture()[0] == "64bit",
+            "stage_port": devices_config.stage.port,
+            "zolix_dll_exists": _path_exists(zolix_dll),
+            "zolix_ftd2xx_exists": _path_exists(zolix_dll.parent / "ftd2xx.dll"),
+            "zolix_loadable": self._can_load_zolix(zolix_dll) if _path_exists(zolix_dll) else False,
+            "dfield_dll_exists": _path_exists(dfield_dll),
+            "dfield_loadable": self._can_load_dfield(dfield_dll) if _path_exists(dfield_dll) else False,
+        }
+
+    def create_stage(self, devices_config: DevicesConfig) -> WaynelabsStage:
+        transport = serial.Serial(
+            port=devices_config.stage.port,
+            baudrate=devices_config.stage.baudrate,
+            timeout=2,
+            write_timeout=2,
+        )
+        return WaynelabsStage(devices_config.stage, transport=transport, dry_run=False)
+
+    def create_spectrometer(self, devices_config: DevicesConfig) -> ZolixSpectrometer:
+        loaded = load_zolix_library(devices_config.spectrometer.dll_path)
+        configure_zolix_signatures(loaded)
+        raw = ZolixRawClient(loaded)
+        device_id = raw.open_first_device()
+        return ZolixSpectrometer(raw, device_id=device_id)
+
+    def create_camera(self, devices_config: DevicesConfig) -> DFieldCamera:
+        loaded = load_dfield_library(devices_config.camera.dll_path)
+        configure_dfield_signatures(loaded)
+        return DFieldCamera(DFieldRawClient(loaded))
 ```
 
 - [ ] **Step 4: Modify CLI to accept factory and call adapters in real mode**
@@ -2531,23 +2935,78 @@ def main(argv: Sequence[str] | None = None, *, factory: DeviceFactory | None = N
 In hardware command handling, load `devices_config = load_devices_config(args.config)`, resolve mode from `devices_config.runtime.mode`, and when `mode is RuntimeMode.REAL`:
 
 ```python
+if args.domain == "devices" and args.command == "doctor":
+    print(factory.run_doctor(devices_config))
+    return 0
+
+if args.domain == "stage" and args.command == "identify":
+    stage = factory.create_stage(devices_config)
+    try:
+        print(stage.identify())
+    finally:
+        stage.close()
+    return 0
+
 if args.domain == "stage" and args.command == "move":
     stage = factory.create_stage(devices_config)
-    stage.move_relative(axis=args.axis, um=args.um, speed=args.speed)
+    try:
+        stage.move_relative(axis=args.axis, um=args.um, speed=args.speed)
+    finally:
+        stage.close()
     print("stage_move_complete")
+    return 0
+
+if args.domain == "stage" and args.command == "home":
+    stage = factory.create_stage(devices_config)
+    try:
+        stage.home(axis=args.axis, direction=args.direction, speed=args.speed)
+    finally:
+        stage.close()
+    print("stage_home_complete")
+    return 0
+
+if args.domain == "spec" and args.command == "status":
+    spec = factory.create_spectrometer(devices_config)
+    try:
+        print(spec.status())
+    finally:
+        spec.close()
+    return 0
+
+if args.domain == "spec" and args.command == "init":
+    spec = factory.create_spectrometer(devices_config)
+    try:
+        spec.initialize(entrance_port=args.entrance, exit_port=args.exit)
+    finally:
+        spec.close()
+    print("spec_init_complete")
     return 0
 
 if args.domain == "spec" and args.command == "set":
     spec = factory.create_spectrometer(devices_config)
-    spec.set_grating(args.grating)
-    spec.move_to_wavelength_nm(args.wavelength_nm)
-    spec.set_slit_width_um(args.slit_um)
+    try:
+        spec.set_grating(args.grating)
+        spec.move_to_wavelength_nm(args.wavelength_nm)
+        spec.set_slit_width_um(args.slit_um)
+    finally:
+        spec.close()
     print("spec_set_complete")
+    return 0
+
+if args.domain == "camera" and args.command == "status":
+    camera = factory.create_camera(devices_config)
+    try:
+        print(camera.status())
+    finally:
+        camera.close()
     return 0
 
 if args.domain == "camera" and args.command == "capture":
     camera = factory.create_camera(devices_config)
-    camera.capture_to_csv(mode=args.mode, exposure_ms=args.exposure_ms, gain=args.gain, out=Path(args.out))
+    try:
+        camera.capture_to_csv(mode=args.mode, exposure_ms=args.exposure_ms, gain=args.gain, out=Path(args.out))
+    finally:
+        camera.close()
     print("camera_capture_complete")
     return 0
 ```
@@ -2570,7 +3029,7 @@ Run:
 pytest tests/test_hardware_cli.py -v
 ```
 
-Expected: all 3 tests PASS.
+Expected: all 7 tests PASS.
 
 - [ ] **Step 6: Commit real-mode CLI wiring**
 
@@ -2623,7 +3082,7 @@ light: {type: manual, manual_light_control: true}
 def write_workflow_config(path: Path, output_dir: Path):
     path.write_text(
         f"""
-devices_config: configs/devices.yaml
+devices_config: configs/devices.example.yaml
 sample: {{id: sample-001, operator: lab}}
 optics: {{entrance_port: side, exit_port: direct, grating: 1, center_wavelength_nm: 600, slit_width_um: 100}}
 acquisition: {{exposure_ms: 1000, gain: low, read_mode: fvb, frames: 1, subtract_background: true}}
@@ -2688,19 +3147,11 @@ Modify `src/lab_auto/devices/factory.py`:
 ```python
 from lab_auto.config import DevicesConfig, WorkflowConfig
 from lab_auto.devices.light import ManualLight
-from lab_auto.errors import DeviceError
 from lab_auto.workflow.raman import RamanWorkflow
 
 
 class DeviceFactory:
-    def create_stage(self, devices_config: DevicesConfig):
-        raise DeviceError("real WayneLabs stage transport is not configured in this environment")
-
-    def create_spectrometer(self, devices_config: DevicesConfig):
-        raise DeviceError("real Zolix spectrometer DLL is not configured in this environment")
-
-    def create_camera(self, devices_config: DevicesConfig):
-        raise DeviceError("real DField camera DLL is not configured in this environment")
+    # Keep the real create_stage/create_spectrometer/create_camera implementations from Task 10.
 
     def create_light(self, devices_config: DevicesConfig):
         return ManualLight(manual=devices_config.light.manual_light_control)
