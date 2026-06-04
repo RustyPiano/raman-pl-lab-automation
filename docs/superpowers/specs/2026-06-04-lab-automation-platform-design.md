@@ -173,17 +173,19 @@ lab_automation/
       simulated.py
     workflow/
       raman.py
-      mapping.py
       data.py
     processing/
       background.py
       calibration.py
-    agent/
-      tool_schema.py
   tests/
     test_waynelabs_protocol.py
     test_workflow_dry_run.py
 ```
+
+Phase 2 可以再加入以下占位模块，但 Phase 1 骨架不要求创建：
+
+- `src/lab_auto/workflow/mapping.py`
+- `src/lab_auto/agent/tool_schema.py`
 
 设计原则：
 
@@ -206,6 +208,22 @@ Phase 1 采用以下规则：
 - Phase 2 可以增加 `ramanctl shell` 或 `ramanctl daemon`，用于人工调试和 AI Agent 长会话控制；Phase 1 不依赖该能力。
 
 这条规则是实现约束。后续开发不得写出依赖跨命令连接状态的 CLI 行为。
+
+### 5.2 Runtime mode
+
+Phase 1 明确定义三种运行模式：
+
+- `dry_run`：只解析配置、校验参数、打印将执行的动作序列，不打开串口、不加载 DLL、不生成真实采集数据。用于预演危险动作。
+- `simulated`：使用假设备执行完整流程，可以生成确定性的假光谱和假元数据。用于无硬件环境的端到端测试。
+- `real`：打开真实串口和 DLL，执行真实硬件动作。必须显式指定。
+
+运行模式优先级：
+
+1. CLI 参数最高：`--real`、`--dry-run`、`--simulated` 互斥，并覆盖配置文件中的 `runtime.mode`。
+2. 其次读取设备配置文件中的 `runtime.mode`。
+3. 如果没有任何指定，默认视为 `dry_run`。
+
+示例 `devices.yaml` 默认使用 `dry_run`，避免误触硬件。真实上机验收应使用 `configs/devices.real.yaml`，或在命令中显式传入 `--real`。
 
 ## 6. 设备接口设计
 
@@ -311,6 +329,14 @@ spec.close()
 - 厂家 Python Demo 不是权威封装；存在硬编码 DLL 路径、未实现函数和个别函数名错误。
 - 应以 `SDK/inc/spectrometer.h` 和 VS Demo 为准。
 
+端口枚举映射：
+
+- Python API 和 YAML 使用规范化字符串，首选 `direct` 和 `side`。
+- `entrance_port: direct` 调用 `spec_set_entrance_port(id, true)`；`entrance_port: side` 调用 `spec_set_entrance_port(id, false)`。
+- `exit_port: direct` 调用 `spec_set_exit_port(id, true)`；`exit_port: side` 调用 `spec_set_exit_port(id, false)`。
+- `front` 可作为 `direct` 的兼容别名读入，但保存到元数据时统一写 `direct`。
+- `get_entrance_port` 和 `get_exit_port` 返回 `true` 时映射为 `direct`，返回 `false` 时映射为 `side`。
+
 ### 6.3 DField-VS-A4 CCD/相机
 
 通信方式：
@@ -359,6 +385,14 @@ camera.close()
 
 - DField C++ Demo 调用了 `a4_set_trigger_mode(1)`，但当前头文件和 DLL 导出符号都没有该函数。实现时不得依赖该调用。
 - `a4_single_capture` 返回原始 buffer；需要在封装层根据读出模式、ROI、binning 转成一维谱或二维图像。
+
+枚举映射：
+
+- `gain: high` 调用 `a4_set_gain(0)`；`gain: low` 调用 `a4_set_gain(1)`。
+- `a4_get_gain()` 返回 `0` 时映射为 `high`，返回 `1` 时映射为 `low`。
+- `read_mode: fvb` 调用 `a4_set_read_mode(0)`；`read_mode: image` 调用 `a4_set_read_mode(1)`。
+- `a4_get_read_mode()` 返回 `0` 时映射为 `fvb`，返回 `1` 时映射为 `image`。
+- 封装层只暴露字符串枚举；ctypes adapter 内部负责整数转换。
 
 ### 6.4 Windows DLL 运行依赖
 
@@ -430,8 +464,8 @@ light.get_state()
 ### 7.1 设备扫描
 
 ```bash
-ramanctl devices scan
-ramanctl devices status
+ramanctl devices scan --dry-run
+ramanctl devices status --config configs/devices.yaml
 ramanctl devices doctor --config configs/devices.yaml
 ```
 
@@ -440,16 +474,16 @@ ramanctl devices doctor --config configs/devices.yaml
 - 串口列表和 WayneLabs 设备类型。
 - Zolix 光谱仪数量和序列号。
 - DField 相机连接状态。
-- 当前是否处于 simulated 模式。
+- 当前 runtime mode：`dry_run`、`simulated` 或 `real`。
 
 ### 7.2 位移台
 
 ```bash
-ramanctl stage identify --port COM5
-ramanctl stage move --axis x --um 100 --speed 8
-ramanctl stage move --axis y --um -50 --speed 8
-ramanctl stage home --axis x --direction negative --speed 8 --yes
-ramanctl stage trigger --mode open-loop
+ramanctl stage identify --config configs/devices.yaml
+ramanctl stage move --config configs/devices.yaml --axis x --um 100 --speed 8
+ramanctl stage move --config configs/devices.yaml --axis y --um -50 --speed 8
+ramanctl stage home --config configs/devices.yaml --axis x --direction negative --speed 8 --yes
+ramanctl stage trigger --config configs/devices.yaml --mode open-loop
 ```
 
 ### 7.3 光谱仪
@@ -471,12 +505,20 @@ ramanctl camera temperature --config configs/devices.yaml
 ### 7.5 Raman/PL 工作流
 
 ```bash
-ramanctl workflow single --config configs/single_point.yaml
+ramanctl workflow single --config configs/single_point.yaml --dry-run
+ramanctl workflow single --config configs/single_point.yaml --devices-config configs/devices.real.yaml --real --yes
 ramanctl workflow background --config configs/single_point.yaml
 ramanctl workflow sample --config configs/single_point.yaml
 ```
 
 Mapping 扫描命令进入 Phase 2。Phase 1 只要求单点测量相关命令可执行和可验收。
+
+`workflow` 命令的配置规则：
+
+- `--config` 指向工作流配置，例如样品 ID、光路参数、采集参数和输出目录。
+- 工作流配置可以通过 `devices_config` 引用设备配置。
+- `--devices-config` 可以覆盖工作流配置中的 `devices_config`，用于同一实验参数在 dry-run、simulated 和真实硬件间切换。
+- `--real`、`--dry-run`、`--simulated` 仍按全局优先级覆盖设备配置中的 `runtime.mode`。
 
 ## 8. Python API 设计
 
@@ -484,8 +526,11 @@ Mapping 扫描命令进入 Phase 2。Phase 1 只要求单点测量相关命令�
 from lab_auto.workflow.raman import RamanWorkflow
 from lab_auto.config import load_config
 
-config = load_config("configs/single_point.yaml")
-workflow = RamanWorkflow.from_config(config)
+workflow_config, devices_config = load_config(
+    workflow_path="configs/single_point.yaml",
+    devices_override=None,
+)
+workflow = RamanWorkflow.from_config(workflow_config, devices_config)
 
 workflow.initialize()
 workflow.prepare_optics()
@@ -573,21 +618,45 @@ X 轴规则：
 - 如果 `spec_pixels_to_waves` 缺少必要参数、调用失败或当前配置无法校准，Phase 1 仍允许输出 `pixel_index` 光谱，但必须在 `metadata.json` 中写入 `x_axis_type: pixel_index` 和 warning。
 - 不允许在没有校准的情况下把 pixel index 标成 wavelength。
 
-Phase 1 FVB CSV 格式：
+Phase 1 FVB 输出文件：
+
+- `raw.csv` 保存样品采集原始谱。
+- `background.csv` 保存背景谱。
+- `corrected.csv` 保存背景扣除后的对齐结果。
+
+`raw.csv` 格式：
 
 ```csv
-pixel_index,wavelength_nm,intensity_raw,intensity_background,intensity_corrected,saturated
-0,580.123,12345,100,12245,false
-1,580.145,12410,101,12309,false
+pixel_index,wavelength_nm,intensity_raw,saturated
+0,580.123,12345,false
+1,580.145,12410,false
 ```
 
-如果没有波长轴：
+`background.csv` 格式：
 
 ```csv
-pixel_index,intensity_raw,intensity_background,intensity_corrected,saturated
-0,12345,100,12245,false
-1,12410,101,12309,false
+pixel_index,wavelength_nm,intensity_background,saturated
+0,580.123,100,false
+1,580.145,101,false
 ```
+
+`corrected.csv` 格式：
+
+```csv
+pixel_index,wavelength_nm,intensity_raw,intensity_background,intensity_corrected,saturated_raw,saturated_background
+0,580.123,12345,100,12245,false,false
+1,580.145,12410,101,12309,false,false
+```
+
+如果没有波长轴，各 CSV 省略 `wavelength_nm`，但必须保留 `pixel_index`。例如 `corrected.csv`：
+
+```csv
+pixel_index,intensity_raw,intensity_background,intensity_corrected,saturated_raw,saturated_background
+0,12345,100,12245,false,false
+1,12410,101,12309,false,false
+```
+
+单独执行 `camera capture --mode fvb --out ...` 时，没有背景和扣除结果，输出采用 `raw.csv` 的列集合。
 
 Phase 1 IMAGE 诊断输出格式：
 
@@ -641,9 +710,13 @@ light:
   manual_light_control: true
 ```
 
+`devices.yaml` 是开发默认配置，不应直接作为上机配置提交真实端口和路径。真实上机建议复制为 `configs/devices.real.yaml`，将 `runtime.mode` 改为 `real`，并填写目标电脑上的 DLL 路径、串口号和实际光源控制方式。
+
 示例 `single_point.yaml`：
 
 ```yaml
+devices_config: configs/devices.yaml
+
 sample:
   id: sample-001
   operator: lab
@@ -666,6 +739,14 @@ output:
   directory: output/measurements
   formats: [csv, json]
 ```
+
+配置加载规则：
+
+- 设备命令只读取设备配置：`--config configs/devices.yaml`。
+- 工作流命令读取工作流配置：`--config configs/single_point.yaml`。
+- 工作流配置中的 `devices_config` 指向默认设备配置。
+- 命令行 `--devices-config configs/devices.real.yaml` 覆盖 `devices_config`。
+- CLI runtime 参数覆盖所有配置文件中的 `runtime.mode`。
 
 ## 11. 数据输出
 
@@ -690,7 +771,7 @@ output/measurements/20260604-153000-sample-001/
 - 光栅、中心波长、狭缝宽度。
 - 曝光时间、增益、读出模式、binning、ROI。
 - 背景扣除参数。
-- 操作模式：real、dry-run、simulated。
+- 操作模式：`real`、`dry_run`、`simulated`。
 - 错误和警告列表。
 
 ## 12. 安全策略
@@ -753,7 +834,7 @@ WayneLabs 串口协议没有提供绝对位置读取接口，因此软件必须�
 - 串口命令必须完整发送，避免硬件超时后残留半条命令。
 - 每个硬件动作设置超时，超时后进入错误状态。
 - 发生错误时优先关闭激光或提示人工关闭激光，再停止采集。
-- dry-run 是默认开发模式，真实硬件模式必须显式指定。
+- `dry_run` 是默认开发模式，真实硬件模式必须显式指定为 `real`。
 
 ## 13. 测试策略
 
@@ -818,9 +899,9 @@ Fail 标准：
 验收命令：
 
 ```bash
-ramanctl stage identify --config configs/devices.yaml
-ramanctl stage move --config configs/devices.yaml --axis x --um 10 --speed 8 --yes
-ramanctl stage home --config configs/devices.yaml --axis x --direction negative --speed 8 --yes
+ramanctl stage identify --config configs/devices.real.yaml --real
+ramanctl stage move --config configs/devices.real.yaml --real --axis x --um 10 --speed 8 --yes
+ramanctl stage home --config configs/devices.real.yaml --real --axis x --direction negative --speed 8 --yes
 pytest tests/test_waynelabs_protocol.py
 ```
 
@@ -847,10 +928,10 @@ Fail 标准：
 验收命令：
 
 ```bash
-ramanctl devices doctor --config configs/devices.yaml
-ramanctl spec status --config configs/devices.yaml
-ramanctl spec init --config configs/devices.yaml --entrance side --exit direct
-ramanctl spec set --config configs/devices.yaml --grating 1 --wavelength-nm 600 --slit-um 100
+ramanctl devices doctor --config configs/devices.real.yaml --real
+ramanctl spec status --config configs/devices.real.yaml --real
+ramanctl spec init --config configs/devices.real.yaml --real --entrance side --exit direct
+ramanctl spec set --config configs/devices.real.yaml --real --grating 1 --wavelength-nm 600 --slit-um 100
 ```
 
 Pass 标准：
@@ -876,9 +957,9 @@ Fail 标准：
 验收命令：
 
 ```bash
-ramanctl camera status --config configs/devices.yaml
-ramanctl camera capture --config configs/devices.yaml --mode fvb --exposure-ms 1000 --gain low --out output/captures/fvb.csv
-ramanctl camera capture --config configs/devices.yaml --mode image --exposure-ms 100 --out output/captures/image.csv
+ramanctl camera status --config configs/devices.real.yaml --real
+ramanctl camera capture --config configs/devices.real.yaml --real --mode fvb --exposure-ms 1000 --gain low --out output/captures/fvb.csv
+ramanctl camera capture --config configs/devices.real.yaml --real --mode image --exposure-ms 100 --out output/captures/image.csv
 ```
 
 Pass 标准：
@@ -908,7 +989,7 @@ Fail 标准：
 
 ```bash
 ramanctl workflow single --config configs/single_point.example.yaml --dry-run
-ramanctl workflow single --config configs/single_point.yaml --yes
+ramanctl workflow single --config configs/single_point.yaml --devices-config configs/devices.real.yaml --real --yes
 ```
 
 Pass 标准：
