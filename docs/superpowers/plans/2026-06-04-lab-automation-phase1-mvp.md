@@ -1062,6 +1062,15 @@ def test_known_axis_uses_soft_limits(tmp_path):
         stage.move_relative(axis="x", um=10, speed=8)
 
 
+def test_known_axis_updates_position_after_successful_move(tmp_path):
+    ledger = PositionLedger(states={"x": AxisState.USER_ZEROED}, position_um={"x": 100.0})
+    stage = WaynelabsStage(config(tmp_path), transport=None, dry_run=True, ledger=ledger)
+
+    stage.move_relative(axis="x", um=10, speed=8)
+
+    assert ledger.position_um["x"] == 110.0
+
+
 def test_home_marks_axis_homed_after_success(tmp_path):
     protocol = FakeStageProtocol()
     ledger = PositionLedger()
@@ -1189,6 +1198,8 @@ class WaynelabsStage:
         ]
         for command in commands:
             self._send_command(command)
+        if self.ledger.states.get(axis, AxisState.UNKNOWN) is not AxisState.UNKNOWN:
+            self.ledger.position_um[axis] = self.ledger.position_um.get(axis, 0.0) + um
         return commands
 
     def identify(self) -> dict:
@@ -1214,7 +1225,7 @@ Run:
 pytest tests/test_stage_safety.py -v
 ```
 
-Expected: all 4 tests PASS.
+Expected: all 5 tests PASS.
 
 - [ ] **Step 5: Commit stage adapter**
 
@@ -1334,7 +1345,7 @@ def test_adapter_exposes_phase1_cli_and_workflow_methods():
     assert spec.set_grating(1) is True
     assert spec.move_to_wavelength_nm(600.0) is True
     assert spec.set_slit_width_um(100) is True
-    assert spec.pixels_to_waves(center_wavelength_nm=600.0, count=3) == [599.99, 600.0, 600.01]
+    assert spec.pixels_to_waves(turret=0, grating=1, center_wavelength_nm=600.0, width=2048, count=3, bin_x=1) == [599.99, 600.0, 600.01]
     spec.close()
 
     assert raw.calls == [
@@ -1344,7 +1355,7 @@ def test_adapter_exposes_phase1_cli_and_workflow_methods():
         ("set_grating", 7, 1),
         ("move_to_wavelength_nm", 7, 600.0),
         ("set_slit_width_um", 7, 100),
-        ("pixels_to_waves", 7, 600.0, 3),
+        ("pixels_to_waves", 7, 0, 1, 600.0, 2048, 3, 1),
         ("close", 7),
     ]
 
@@ -1377,8 +1388,8 @@ class FakeZolixRaw:
         self.calls.append(("set_slit_width_um", device_id, width_um))
         return True
 
-    def pixels_to_waves(self, device_id: int, *, center_wavelength_nm: float, count: int) -> list[float]:
-        self.calls.append(("pixels_to_waves", device_id, center_wavelength_nm, count))
+    def pixels_to_waves(self, device_id: int, *, turret: int, grating: int, center_wavelength_nm: float, width: int, count: int, bin_x: int) -> list[float]:
+        self.calls.append(("pixels_to_waves", device_id, turret, grating, center_wavelength_nm, width, count, bin_x))
         return [599.99, 600.0, 600.01]
 
     def close(self, device_id: int) -> None:
@@ -1494,9 +1505,19 @@ class ZolixRawClient:
     def set_slit_width_um(self, device_id: int, width_um: int) -> bool:
         return bool(self.lib.spec_set_slit_width(device_id, 0, width_um))
 
-    def pixels_to_waves(self, device_id: int, *, center_wavelength_nm: float, count: int) -> list[float]:
+    def pixels_to_waves(
+        self,
+        device_id: int,
+        *,
+        turret: int,
+        grating: int,
+        center_wavelength_nm: float,
+        width: int,
+        count: int,
+        bin_x: int,
+    ) -> list[float]:
         values = (ctypes.c_float * count)()
-        ok = self.lib.spec_pixels_to_waves(device_id, 0, count, ctypes.c_float(center_wavelength_nm), 0, 0, 0, values)
+        ok = self.lib.spec_pixels_to_waves(device_id, turret, grating, ctypes.c_float(center_wavelength_nm), width, count, bin_x, values)
         if not ok:
             return []
         return [float(values[index]) for index in range(count)]
@@ -1552,8 +1573,25 @@ class ZolixSpectrometer:
     def set_slit_width_um(self, width_um: int) -> bool:
         return self.raw.set_slit_width_um(self.device_id, width_um)
 
-    def pixels_to_waves(self, *, center_wavelength_nm: float, count: int) -> list[float]:
-        return self.raw.pixels_to_waves(self.device_id, center_wavelength_nm=center_wavelength_nm, count=count)
+    def pixels_to_waves(
+        self,
+        *,
+        turret: int,
+        grating: int,
+        center_wavelength_nm: float,
+        width: int,
+        count: int,
+        bin_x: int,
+    ) -> list[float]:
+        return self.raw.pixels_to_waves(
+            self.device_id,
+            turret=turret,
+            grating=grating,
+            center_wavelength_nm=center_wavelength_nm,
+            width=width,
+            count=count,
+            bin_x=bin_x,
+        )
 
     def close(self) -> None:
         self.raw.close(self.device_id)
@@ -1668,6 +1706,11 @@ def test_adapter_exposes_phase1_status_capture_and_csv(tmp_path):
     frame = camera.capture(read_mode="fvb", exposure_ms=1000, gain="low", frames=1)
     camera.capture_to_csv(mode="fvb", exposure_ms=1000, gain="low", out=out)
 
+    assert frame.width == 3
+    assert frame.height == 1
+    assert frame.bin_x == 1
+    assert frame.bin_y == 1
+    assert frame.roi is None
     assert frame.values == [100, 101, 102]
     assert raw.calls == [
         ("status",),
@@ -1686,9 +1729,17 @@ class FakeDFieldRaw:
         self.calls.append(("status",))
         return {"open": True, "width": 3, "height": 1}
 
-    def capture(self, *, read_mode_code: int, exposure_ms: float, gain_code: int, frames: int) -> tuple[list[int], list[bool]]:
+    def capture(self, *, read_mode_code: int, exposure_ms: float, gain_code: int, frames: int) -> dict:
         self.calls.append(("capture", read_mode_code, exposure_ms, gain_code, frames))
-        return [100, 101, 102], [False, False, False]
+        return {
+            "width": 3,
+            "height": 1,
+            "bin_x": 1,
+            "bin_y": 1,
+            "roi": None,
+            "values": [100, 101, 102],
+            "saturated": [False, False, False],
+        }
 
     def close(self) -> None:
         self.closed = True
@@ -1778,22 +1829,49 @@ class DFieldRawClient:
         self.lib.a4_get_detector_size(ctypes.byref(width), ctypes.byref(height))
         return {"open": True, "width": width.value, "height": height.value}
 
-    def capture(self, *, read_mode_code: int, exposure_ms: float, gain_code: int, frames: int) -> tuple[list[int], list[bool]]:
+    def capture(self, *, read_mode_code: int, exposure_ms: float, gain_code: int, frames: int) -> dict:
         self.lib.a4_open()
         self.lib.a4_set_exposure(ctypes.c_float(exposure_ms))
         self.lib.a4_set_gain(gain_code)
         self.lib.a4_set_read_mode(read_mode_code)
         width = ctypes.c_int()
         height = ctypes.c_int()
+        bin_x = ctypes.c_int()
+        bin_y = ctypes.c_int()
+        roi_x = ctypes.c_int()
+        roi_y = ctypes.c_int()
+        roi_w = ctypes.c_int()
+        roi_h = ctypes.c_int()
         self.lib.a4_get_detector_size(ctypes.byref(width), ctypes.byref(height))
-        size = width.value if read_mode_code == 0 else width.value * height.value
+        self.lib.a4_get_bin(ctypes.byref(bin_x), ctypes.byref(bin_y))
+        self.lib.a4_get_roi(ctypes.byref(roi_x), ctypes.byref(roi_y), ctypes.byref(roi_w), ctypes.byref(roi_h))
+        capture_width = width.value // max(bin_x.value, 1)
+        capture_height = height.value // max(bin_y.value, 1)
+        size = capture_width if read_mode_code == 0 else capture_width * capture_height
         buffer = windows_long_array(size)
         ok = self.lib.a4_single_capture(buffer, size)
         if not ok:
-            return [], []
+            return {
+                "width": width.value,
+                "height": height.value,
+                "bin_x": bin_x.value,
+                "bin_y": bin_y.value,
+                "roi": None,
+                "values": [],
+                "saturated": [],
+            }
         values = [int(buffer[index]) for index in range(size)]
         saturated = [value >= 65535 for value in values]
-        return values, saturated
+        roi = None if (roi_w.value == 0 or roi_h.value == 0) else (roi_x.value, roi_y.value, roi_w.value, roi_h.value)
+        return {
+            "width": width.value,
+            "height": height.value,
+            "bin_x": bin_x.value,
+            "bin_y": bin_y.value,
+            "roi": roi,
+            "values": values,
+            "saturated": saturated,
+        }
 
     def close(self) -> None:
         self.lib.a4_close()
@@ -1835,7 +1913,7 @@ class DFieldCamera:
         return self.raw.status()
 
     def capture(self, *, read_mode: str, exposure_ms: float, gain: str, frames: int) -> CaptureFrame:
-        values, saturated = self.raw.capture(
+        result = self.raw.capture(
             read_mode_code=read_mode_to_code(read_mode),
             exposure_ms=exposure_ms,
             gain_code=gain_to_code(gain),
@@ -1843,11 +1921,16 @@ class DFieldCamera:
         )
         return CaptureFrame(
             read_mode=read_mode,
+            width=result["width"],
+            height=result["height"],
+            bin_x=result["bin_x"],
+            bin_y=result["bin_y"],
+            roi=result["roi"],
             exposure_ms=exposure_ms,
             gain=gain,
-            values=values,
-            saturated_count=sum(1 for value in saturated if value),
-            saturated=saturated,
+            values=result["values"],
+            saturated_count=sum(1 for value in result["saturated"] if value),
+            saturated=result["saturated"],
             metadata={"frames": frames},
         )
 
@@ -1919,7 +2002,7 @@ def test_simulated_camera_returns_deterministic_fvb_frame():
 def test_simulated_spectrometer_pixel_to_wavelength():
     spec = SimulatedSpectrometer()
 
-    waves = spec.pixels_to_waves(center_wavelength_nm=600.0, count=3)
+    waves = spec.pixels_to_waves(turret=0, grating=1, center_wavelength_nm=600.0, width=2048, count=3, bin_x=1)
 
     assert waves == [599.99, 600.0, 600.01]
 ```
@@ -1994,7 +2077,7 @@ class SimulatedCamera:
 
 
 class SimulatedSpectrometer:
-    def pixels_to_waves(self, *, center_wavelength_nm: float, count: int) -> list[float]:
+    def pixels_to_waves(self, *, turret: int, grating: int, center_wavelength_nm: float, width: int, count: int, bin_x: int) -> list[float]:
         middle = (count - 1) / 2
         return [round(center_wavelength_nm + (index - middle) * 0.01, 6) for index in range(count)]
 ```
@@ -2140,7 +2223,7 @@ from lab_auto.devices.light import ManualLight
 from lab_auto.devices.simulated import SimulatedCamera, SimulatedSpectrometer
 from lab_auto.logging import append_run_log
 from lab_auto.processing.background import subtract_background
-from lab_auto.workflow.data import SpectrumData
+from lab_auto.workflow.data import CaptureFrame, SpectrumData
 
 
 @dataclass
@@ -2175,29 +2258,39 @@ class RamanWorkflow:
             "save_outputs",
         ]
 
-    def _frame_to_spectrum(self, values: list[int]) -> SpectrumData:
+    def _frame_to_spectrum(self, frame: CaptureFrame, *, values: list[int] | None = None) -> SpectrumData:
+        source_values = frame.values if values is None else values
         x = self.spectrometer.pixels_to_waves(
+            turret=0,
+            grating=self.config.optics.grating,
             center_wavelength_nm=self.config.optics.center_wavelength_nm,
-            count=len(values),
+            width=frame.width,
+            count=len(source_values),
+            bin_x=frame.bin_x,
         )
+        if len(x) == len(source_values):
+            x_axis_type = "wavelength_nm"
+        else:
+            x_axis_type = "pixel_index"
+            x = list(range(len(source_values)))
         metadata = {
             "read_mode": self.config.acquisition.read_mode,
-            "bin_x": 1,
-            "bin_y": 1,
-            "roi": None,
-            "detector_width": len(values),
-            "detector_height": 1,
+            "bin_x": frame.bin_x,
+            "bin_y": frame.bin_y,
+            "roi": frame.roi,
+            "detector_width": frame.width,
+            "detector_height": frame.height,
             "grating": self.config.optics.grating,
             "center_wavelength_nm": self.config.optics.center_wavelength_nm,
             "slit_width_um": self.config.optics.slit_width_um,
         }
         return SpectrumData(
-            x_axis_type="wavelength_nm",
+            x_axis_type=x_axis_type,
             x=x,
-            intensity_raw=[float(value) for value in values],
+            intensity_raw=[float(value) for value in source_values],
             intensity_background=None,
             intensity_corrected=None,
-            saturated=[False for _ in values],
+            saturated=[False for _ in source_values],
             metadata=metadata,
         )
 
@@ -2216,8 +2309,8 @@ class RamanWorkflow:
             gain=self.config.acquisition.gain,
             frames=self.config.acquisition.frames,
         )
-        background = self._frame_to_spectrum([100 for _ in background_frame.values])
-        raw = self._frame_to_spectrum(sample_frame.values)
+        background = self._frame_to_spectrum(background_frame, values=[100 for _ in background_frame.values])
+        raw = self._frame_to_spectrum(sample_frame)
         corrected = subtract_background(raw, background)
         self._write_raw(run_dir / "raw.csv", raw)
         self._write_background(run_dir / "background.csv", background)
@@ -2263,31 +2356,53 @@ class RamanWorkflow:
     def _write_raw(self, path: Path, spectrum: SpectrumData) -> None:
         with path.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
-            writer.writerow(["pixel_index", "wavelength_nm", "intensity_raw", "saturated"])
-            for index, (wave, value, saturated) in enumerate(zip(spectrum.x, spectrum.intensity_raw, spectrum.saturated, strict=True)):
-                writer.writerow([index, wave, value, str(saturated).lower()])
+            if spectrum.x_axis_type == "wavelength_nm":
+                writer.writerow(["pixel_index", "wavelength_nm", "intensity_raw", "saturated"])
+                for index, (wave, value, saturated) in enumerate(zip(spectrum.x, spectrum.intensity_raw, spectrum.saturated, strict=True)):
+                    writer.writerow([index, wave, value, str(saturated).lower()])
+            else:
+                writer.writerow(["pixel_index", "intensity_raw", "saturated"])
+                for index, (value, saturated) in enumerate(zip(spectrum.intensity_raw, spectrum.saturated, strict=True)):
+                    writer.writerow([index, value, str(saturated).lower()])
 
     def _write_background(self, path: Path, spectrum: SpectrumData) -> None:
         with path.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
-            writer.writerow(["pixel_index", "wavelength_nm", "intensity_background", "saturated"])
-            for index, (wave, value, saturated) in enumerate(zip(spectrum.x, spectrum.intensity_raw, spectrum.saturated, strict=True)):
-                writer.writerow([index, wave, value, str(saturated).lower()])
+            if spectrum.x_axis_type == "wavelength_nm":
+                writer.writerow(["pixel_index", "wavelength_nm", "intensity_background", "saturated"])
+                for index, (wave, value, saturated) in enumerate(zip(spectrum.x, spectrum.intensity_raw, spectrum.saturated, strict=True)):
+                    writer.writerow([index, wave, value, str(saturated).lower()])
+            else:
+                writer.writerow(["pixel_index", "intensity_background", "saturated"])
+                for index, (value, saturated) in enumerate(zip(spectrum.intensity_raw, spectrum.saturated, strict=True)):
+                    writer.writerow([index, value, str(saturated).lower()])
 
     def _write_corrected(self, path: Path, spectrum: SpectrumData) -> None:
         with path.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
-            writer.writerow(["pixel_index", "wavelength_nm", "intensity_raw", "intensity_background", "intensity_corrected", "saturated_raw", "saturated_background"])
-            for index, wave in enumerate(spectrum.x):
-                writer.writerow([
-                    index,
-                    wave,
-                    spectrum.intensity_raw[index],
-                    spectrum.intensity_background[index],
-                    spectrum.intensity_corrected[index],
-                    str(spectrum.saturated[index]).lower(),
-                    "false",
-                ])
+            if spectrum.x_axis_type == "wavelength_nm":
+                writer.writerow(["pixel_index", "wavelength_nm", "intensity_raw", "intensity_background", "intensity_corrected", "saturated_raw", "saturated_background"])
+                for index, wave in enumerate(spectrum.x):
+                    writer.writerow([
+                        index,
+                        wave,
+                        spectrum.intensity_raw[index],
+                        spectrum.intensity_background[index],
+                        spectrum.intensity_corrected[index],
+                        str(spectrum.saturated[index]).lower(),
+                        "false",
+                    ])
+            else:
+                writer.writerow(["pixel_index", "intensity_raw", "intensity_background", "intensity_corrected", "saturated_raw", "saturated_background"])
+                for index in range(len(spectrum.x)):
+                    writer.writerow([
+                        index,
+                        spectrum.intensity_raw[index],
+                        spectrum.intensity_background[index],
+                        spectrum.intensity_corrected[index],
+                        str(spectrum.saturated[index]).lower(),
+                        "false",
+                    ])
 ```
 
 - [ ] **Step 4: Run workflow tests**
@@ -2439,6 +2554,7 @@ Create `src/lab_auto/cli.py`:
 ```python
 import argparse
 from collections.abc import Sequence
+from pathlib import Path
 
 from lab_auto.config import load_devices_config, load_workflow_and_devices
 from lab_auto.errors import ConfigError
@@ -3106,7 +3222,7 @@ def test_workflow_single_real_uses_factory_workflow(tmp_path, capsys):
 
     assert exit_code == 0
     assert factory.created is True
-    assert factory.workflow.calls == [("run_single_point", False)]
+    assert factory.workflow.calls == [("run_single_point", False), ("close",)]
     assert str(tmp_path / "out" / "sample-001") in capsys.readouterr().out
 
 
@@ -3128,6 +3244,9 @@ class FakeRealWorkflow:
     def run_single_point(self, *, require_confirmation: bool):
         self.calls.append(("run_single_point", require_confirmation))
         return self.run_dir
+
+    def close(self):
+        self.calls.append(("close",))
 ```
 
 - [ ] **Step 2: Run test to verify real workflow still refused**
@@ -3176,9 +3295,17 @@ def real(cls, config: WorkflowConfig, *, stage, spectrometer, camera, light) -> 
     workflow = cls(config, False, camera, spectrometer, light)
     workflow.stage = stage
     return workflow
+
+
+def close(self) -> None:
+    for device in (getattr(self, "stage", None), self.spectrometer, self.camera):
+        if device is not None:
+            close = getattr(device, "close", None)
+            if close is not None:
+                close()
 ```
 
-This keeps real workflow composition in the factory and prevents CLI from constructing hardware adapters directly.
+This keeps real workflow composition in the factory, gives workflow a single shutdown contract, and prevents CLI from constructing hardware adapters directly.
 
 - [ ] **Step 5: Modify CLI real workflow branch**
 
@@ -3187,7 +3314,10 @@ In `src/lab_auto/cli.py`, replace the Task 9 real workflow rejection:
 ```python
 if mode is RuntimeMode.REAL:
     workflow = factory.create_single_point_workflow(workflow_config, devices_config)
-    print(workflow.run_single_point(require_confirmation=not args.yes))
+    try:
+        print(workflow.run_single_point(require_confirmation=not args.yes))
+    finally:
+        workflow.close()
     return 0
 ```
 
