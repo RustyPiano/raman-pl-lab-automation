@@ -724,6 +724,8 @@ class CaptureFrame:
     saturated_count: int
     saturated: list[bool]
     metadata: dict[str, Any]
+    raw_frames_count: int = 1
+    saturation_threshold: int = 65535
 
 
 @dataclass(frozen=True)
@@ -735,12 +737,19 @@ class SpectrumData:
     intensity_corrected: list[float] | None
     saturated: list[bool]
     metadata: dict[str, Any]
+    background_saturated: list[bool] | None = None
 
-    def with_background(self, background: list[float], corrected: list[float]) -> "SpectrumData":
+    def with_background(
+        self,
+        background: list[float],
+        corrected: list[float],
+        background_saturated: list[bool],
+    ) -> "SpectrumData":
         return replace(
             self,
             intensity_background=list(background),
             intensity_corrected=list(corrected),
+            background_saturated=list(background_saturated),
         )
 ```
 
@@ -803,7 +812,7 @@ def subtract_background(
         float(raw_value) - float(bg_value)
         for raw_value, bg_value in zip(raw.intensity_raw, background.intensity_raw, strict=True)
     ]
-    return raw.with_background(background.intensity_raw, corrected)
+    return raw.with_background(background.intensity_raw, corrected, background.saturated)
 ```
 
 - [ ] **Step 5: Run background tests**
@@ -1251,7 +1260,7 @@ Create `tests/test_zolix_ctypes.py`:
 ```python
 import ctypes
 
-from lab_auto.devices.raw.zolix_ctypes import LoadedLibrary, configure_signatures
+from lab_auto.devices.raw.zolix_ctypes import LoadedLibrary, ZolixRawClient, configure_signatures
 
 
 class FakeLibrary:
@@ -1293,6 +1302,17 @@ def test_configures_usb_mode_as_void_return():
 
     assert lib.spec_set_usb_mode.argtypes == [ctypes.c_bool]
     assert lib.spec_set_usb_mode.restype is None
+
+
+def test_raw_client_applies_usb_mode_before_enumeration():
+    lib = FakeLibrary()
+    lib.usb_mode_calls = []
+    lib.spec_set_usb_mode = lambda enabled: lib.usb_mode_calls.append(enabled)
+    raw = ZolixRawClient(lib)
+
+    raw.set_usb_mode(True)
+
+    assert lib.usb_mode_calls == [True]
 
 
 def test_loaded_library_retains_dll_directory_handle():
@@ -1484,6 +1504,9 @@ class ZolixRawClient:
     def __init__(self, lib):
         self.lib = lib
 
+    def set_usb_mode(self, enabled: bool) -> None:
+        self.lib.spec_set_usb_mode(bool(enabled))
+
     def open_first_device(self) -> int:
         count = int(self.lib.spec_enum_dev_count())
         if count < 1:
@@ -1623,7 +1646,7 @@ Run:
 pytest tests/test_zolix_ctypes.py tests/test_zolix_adapter.py -v
 ```
 
-Expected: all 10 tests PASS.
+Expected: all 11 tests PASS.
 
 - [ ] **Step 7: Commit Zolix boundary**
 
@@ -1649,7 +1672,7 @@ Create `tests/test_dfield_ctypes.py`:
 ```python
 import ctypes
 
-from lab_auto.devices.raw.dfield_ctypes import LoadedLibrary, configure_signatures, windows_long_array
+from lab_auto.devices.raw.dfield_ctypes import DFieldRawClient, LoadedLibrary, configure_signatures, windows_long_array
 
 
 class FakeLibrary:
@@ -1686,6 +1709,65 @@ def test_loaded_library_retains_dll_directory_handle():
 
     assert loaded.dll_directory_handle is handle
     assert loaded.lib is lib
+
+
+def test_raw_capture_uses_inclusive_roi_size_and_opens_once():
+    lib = FakeDFieldLibrary()
+    raw = DFieldRawClient(lib)
+
+    first = raw.capture(read_mode_code=1, exposure_ms=1000, gain_code=1, frames=1)
+    second = raw.capture(read_mode_code=1, exposure_ms=1000, gain_code=1, frames=1)
+
+    assert lib.open_calls == 1
+    assert lib.capture_sizes == [6, 6]
+    assert first["roi"] == (2, 4, 10, 11)
+    assert first["values"] == [100, 101, 102, 103, 104, 105]
+    assert second["raw_frames_count"] == 1
+
+
+class FakeDFieldLibrary:
+    def __init__(self):
+        self.open_calls = 0
+        self.capture_sizes = []
+
+    def a4_open(self):
+        self.open_calls += 1
+        return True
+
+    def a4_set_exposure(self, exposure):
+        return True
+
+    def a4_set_gain(self, gain):
+        return True
+
+    def a4_set_read_mode(self, read_mode):
+        return True
+
+    def a4_get_detector_size(self, width, height):
+        width._obj.value = 2048
+        height._obj.value = 2048
+        return True
+
+    def a4_get_bin(self, bin_x, bin_y):
+        bin_x._obj.value = 1
+        bin_y._obj.value = 1
+        return True
+
+    def a4_get_roi(self, col_from, col_to, row_from, row_to):
+        col_from._obj.value = 2
+        col_to._obj.value = 4
+        row_from._obj.value = 10
+        row_to._obj.value = 11
+        return True
+
+    def a4_single_capture(self, buffer, size):
+        self.capture_sizes.append(size)
+        for index in range(size):
+            buffer[index] = 100 + index
+        return True
+
+    def a4_close(self):
+        return None
 ```
 
 - [ ] **Step 2: Write DField adapter tests**
@@ -1733,6 +1815,8 @@ def test_adapter_exposes_phase1_status_capture_and_csv(tmp_path):
     assert frame.bin_y == 1
     assert frame.roi is None
     assert frame.values == [100, 101, 102]
+    assert frame.raw_frames_count == 1
+    assert frame.saturation_threshold == 65535
     assert raw.calls == [
         ("status",),
         ("capture", 0, 1000, 1, 1),
@@ -1774,6 +1858,8 @@ class FakeDFieldRaw:
             "roi": None,
             "values": [100, 101, 102],
             "saturated": [False, False, False],
+            "raw_frames_count": frames,
+            "saturation_threshold": 65535,
         }
 
     def close(self) -> None:
@@ -1857,14 +1943,23 @@ def configure_signatures(lib) -> None:
 
 
 class DFieldRawClient:
+    SATURATION_THRESHOLD = 65535
+
     def __init__(self, lib):
         self.lib = lib
+        self._open = False
 
     def _require_ok(self, action: str, ok: bool) -> None:
         if not ok:
             raise DeviceError(f"DField operation failed: {action}")
 
+    def _ensure_open(self) -> None:
+        if not self._open:
+            self._require_ok("open", self.lib.a4_open())
+            self._open = True
+
     def status(self) -> dict:
+        self._ensure_open()
         width = ctypes.c_int()
         height = ctypes.c_int()
         self._require_ok("get_detector_size", self.lib.a4_get_detector_size(ctypes.byref(width), ctypes.byref(height)))
@@ -1872,7 +1967,7 @@ class DFieldRawClient:
 
     def capture(self, *, read_mode_code: int, exposure_ms: float, gain_code: int, frames: int) -> dict:
         frame_count = max(int(frames), 1)
-        self._require_ok("open", self.lib.a4_open())
+        self._ensure_open()
         self._require_ok("set_exposure", self.lib.a4_set_exposure(ctypes.c_float(exposure_ms)))
         self._require_ok("set_gain", self.lib.a4_set_gain(gain_code))
         self._require_ok("set_read_mode", self.lib.a4_set_read_mode(read_mode_code))
@@ -1887,11 +1982,16 @@ class DFieldRawClient:
         self._require_ok("get_detector_size", self.lib.a4_get_detector_size(ctypes.byref(width), ctypes.byref(height)))
         self._require_ok("get_bin", self.lib.a4_get_bin(ctypes.byref(bin_x), ctypes.byref(bin_y)))
         self._require_ok("get_roi", self.lib.a4_get_roi(ctypes.byref(col_from), ctypes.byref(col_to), ctypes.byref(row_from), ctypes.byref(row_to)))
-        roi_width = col_to.value - col_from.value if col_to.value > col_from.value else width.value
-        roi_height = row_to.value - row_from.value if row_to.value > row_from.value else height.value
-        capture_width = roi_width // max(bin_x.value, 1)
-        capture_height = roi_height // max(bin_y.value, 1)
-        size = capture_width if read_mode_code == 0 else capture_width * capture_height
+        has_roi = col_to.value >= col_from.value and row_to.value >= row_from.value
+        if read_mode_code == 0:
+            capture_width = width.value // max(bin_x.value, 1)
+            size = capture_width
+        else:
+            roi_width = col_to.value - col_from.value + 1 if has_roi else width.value
+            roi_height = row_to.value - row_from.value + 1 if has_roi else height.value
+            capture_width = roi_width // max(bin_x.value, 1)
+            capture_height = roi_height // max(bin_y.value, 1)
+            size = capture_width * capture_height
         if size <= 0:
             raise DeviceError("DField capture size is zero")
         totals = [0 for _ in range(size)]
@@ -1902,9 +2002,9 @@ class DFieldRawClient:
             for index in range(size):
                 value = int(buffer[index])
                 totals[index] += value
-                saturated[index] = saturated[index] or value >= 65535
+                saturated[index] = saturated[index] or value >= self.SATURATION_THRESHOLD
         values = [round(total / frame_count) for total in totals]
-        roi = None if (col_to.value <= col_from.value or row_to.value <= row_from.value) else (col_from.value, col_to.value, row_from.value, row_to.value)
+        roi = (col_from.value, col_to.value, row_from.value, row_to.value) if has_roi else None
         return {
             "width": width.value,
             "height": height.value,
@@ -1913,10 +2013,14 @@ class DFieldRawClient:
             "roi": roi,
             "values": values,
             "saturated": saturated,
+            "raw_frames_count": frame_count,
+            "saturation_threshold": self.SATURATION_THRESHOLD,
         }
 
     def close(self) -> None:
-        self.lib.a4_close()
+        if self._open:
+            self.lib.a4_close()
+            self._open = False
 ```
 
 - [ ] **Step 5: Implement DField adapter mappings**
@@ -1973,7 +2077,12 @@ class DFieldCamera:
             values=result["values"],
             saturated_count=sum(1 for value in result["saturated"] if value),
             saturated=result["saturated"],
-            metadata={"frames": frames},
+            metadata={
+                "raw_frames_count": result["raw_frames_count"],
+                "saturation_threshold": result["saturation_threshold"],
+            },
+            raw_frames_count=result["raw_frames_count"],
+            saturation_threshold=result["saturation_threshold"],
         )
 
     def capture_to_csv(self, *, mode: str, exposure_ms: float, gain: str, out: Path) -> None:
@@ -1997,7 +2106,7 @@ Run:
 pytest tests/test_dfield_ctypes.py tests/test_dfield_camera.py -v
 ```
 
-Expected: all 8 tests PASS.
+Expected: all 9 tests PASS.
 
 - [ ] **Step 7: Commit DField boundary**
 
@@ -2114,7 +2223,11 @@ class SimulatedCamera:
                 "roi": None,
                 "detector_width": width,
                 "detector_height": height,
+                "raw_frames_count": frames,
+                "saturation_threshold": 65535,
             },
+            raw_frames_count=frames,
+            saturation_threshold=65535,
         )
 
 
@@ -2223,6 +2336,19 @@ def test_single_workflow_writes_core_outputs(tmp_path):
     assert (run_dir / "run.log").exists()
 
 
+def test_single_workflow_subtracts_captured_background_values(tmp_path):
+    workflow = RamanWorkflow.simulated(workflow_config(tmp_path))
+    workflow.spectrometer = NoCalibrationSpectrometer()
+    workflow.camera = SequentialCamera([[100, 110], [150, 165]])
+
+    run_dir = workflow.run_single_point(require_confirmation=False)
+
+    corrected_lines = (run_dir / "corrected.csv").read_text(encoding="utf-8").splitlines()
+    assert corrected_lines[0] == "pixel_index,intensity_raw,intensity_background,intensity_corrected,saturated_raw,saturated_background"
+    assert corrected_lines[1] == "0,150.0,100.0,50.0,false,false"
+    assert corrected_lines[2] == "1,165.0,110.0,55.0,false,false"
+
+
 def test_single_workflow_records_axis_fallback_and_saturation_warnings(tmp_path):
     workflow = RamanWorkflow.simulated(workflow_config(tmp_path))
     workflow.spectrometer = NoCalibrationSpectrometer()
@@ -2235,6 +2361,9 @@ def test_single_workflow_records_axis_fallback_and_saturation_warnings(tmp_path)
     assert metadata["x_axis_type"] == "pixel_index"
     assert "wavelength calibration unavailable; using pixel_index" in metadata["warnings"]
     assert "saturated pixels detected" in metadata["warnings"]
+    assert metadata["camera"]["saturated_count"] == 1
+    assert metadata["camera"]["saturation_threshold"] == 65535
+    assert metadata["camera"]["raw_frames_count"] == 1
     assert raw_lines[0] == "pixel_index,intensity_raw,saturated"
     assert raw_lines[1].endswith(",true")
 
@@ -2242,6 +2371,30 @@ def test_single_workflow_records_axis_fallback_and_saturation_warnings(tmp_path)
 class NoCalibrationSpectrometer:
     def pixels_to_waves(self, **kwargs):
         return []
+
+
+class SequentialCamera:
+    def __init__(self, frames: list[list[int]]):
+        self.frames = list(frames)
+
+    def capture(self, *, read_mode: str, exposure_ms: float, gain: str, frames: int) -> CaptureFrame:
+        values = self.frames.pop(0)
+        return CaptureFrame(
+            read_mode=read_mode,
+            width=len(values),
+            height=1,
+            bin_x=1,
+            bin_y=1,
+            roi=None,
+            exposure_ms=exposure_ms,
+            gain=gain,
+            values=values,
+            saturated_count=0,
+            saturated=[False for _ in values],
+            metadata={"raw_frames_count": frames, "saturation_threshold": 65535},
+            raw_frames_count=frames,
+            saturation_threshold=65535,
+        )
 
 
 class SaturatedCamera:
@@ -2258,7 +2411,9 @@ class SaturatedCamera:
             values=[65535, 100],
             saturated_count=1,
             saturated=[True, False],
-            metadata={"frames": frames},
+            metadata={"raw_frames_count": frames, "saturation_threshold": 65535},
+            raw_frames_count=frames,
+            saturation_threshold=65535,
         )
 ```
 
@@ -2315,14 +2470,15 @@ class RamanWorkflow:
     camera: SimulatedCamera
     spectrometer: SimulatedSpectrometer
     light: ManualLight
+    runtime_mode: str
 
     @classmethod
     def dry_run(cls, config: WorkflowConfig) -> "RamanWorkflow":
-        return cls(config, True, SimulatedCamera(), SimulatedSpectrometer(), ManualLight(manual=True))
+        return cls(config, True, SimulatedCamera(), SimulatedSpectrometer(), ManualLight(manual=True), "dry_run")
 
     @classmethod
     def simulated(cls, config: WorkflowConfig) -> "RamanWorkflow":
-        return cls(config, False, SimulatedCamera(), SimulatedSpectrometer(), ManualLight(manual=True))
+        return cls(config, False, SimulatedCamera(), SimulatedSpectrometer(), ManualLight(manual=True), "simulated")
 
     def measure_single_point(self, *, require_confirmation: bool) -> list[str]:
         return [
@@ -2370,6 +2526,9 @@ class RamanWorkflow:
             "grating": self.config.optics.grating,
             "center_wavelength_nm": self.config.optics.center_wavelength_nm,
             "slit_width_um": self.config.optics.slit_width_um,
+            "saturated_count": sum(1 for value in saturated if value),
+            "saturation_threshold": frame.saturation_threshold,
+            "raw_frames_count": frame.raw_frames_count,
             "warnings": warnings,
         }
         return SpectrumData(
@@ -2397,7 +2556,7 @@ class RamanWorkflow:
             gain=self.config.acquisition.gain,
             frames=self.config.acquisition.frames,
         )
-        background = self._frame_to_spectrum(background_frame, values=[100 for _ in background_frame.values])
+        background = self._frame_to_spectrum(background_frame)
         raw = self._frame_to_spectrum(sample_frame)
         corrected = subtract_background(raw, background)
         warnings = list(dict.fromkeys(background.metadata.get("warnings", []) + raw.metadata.get("warnings", [])))
@@ -2410,7 +2569,7 @@ class RamanWorkflow:
                     "sample_id": self.config.sample.id,
                     "operator": self.config.sample.operator,
                     "x_axis_type": raw.x_axis_type,
-                    "runtime_mode": "simulated",
+                    "runtime_mode": self.runtime_mode,
                     "stage_position_um": None,
                     "spectrometer": {
                         "grating": self.config.optics.grating,
@@ -2427,6 +2586,9 @@ class RamanWorkflow:
                         "bin_x": sample_frame.bin_x,
                         "bin_y": sample_frame.bin_y,
                         "roi": sample_frame.roi,
+                        "saturated_count": raw.metadata["saturated_count"],
+                        "saturation_threshold": raw.metadata["saturation_threshold"],
+                        "raw_frames_count": raw.metadata["raw_frames_count"],
                     },
                     "background_subtraction": {
                         "enabled": self.config.acquisition.subtract_background,
@@ -2469,6 +2631,7 @@ class RamanWorkflow:
     def _write_corrected(self, path: Path, spectrum: SpectrumData) -> None:
         with path.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
+            background_saturated = spectrum.background_saturated or [False for _ in spectrum.x]
             if spectrum.x_axis_type == "wavelength_nm":
                 writer.writerow(["pixel_index", "wavelength_nm", "intensity_raw", "intensity_background", "intensity_corrected", "saturated_raw", "saturated_background"])
                 for index, wave in enumerate(spectrum.x):
@@ -2479,7 +2642,7 @@ class RamanWorkflow:
                         spectrum.intensity_background[index],
                         spectrum.intensity_corrected[index],
                         str(spectrum.saturated[index]).lower(),
-                        "false",
+                        str(background_saturated[index]).lower(),
                     ])
             else:
                 writer.writerow(["pixel_index", "intensity_raw", "intensity_background", "intensity_corrected", "saturated_raw", "saturated_background"])
@@ -2490,7 +2653,7 @@ class RamanWorkflow:
                         spectrum.intensity_background[index],
                         spectrum.intensity_corrected[index],
                         str(spectrum.saturated[index]).lower(),
-                        "false",
+                        str(background_saturated[index]).lower(),
                     ])
 ```
 
@@ -3110,6 +3273,7 @@ class DeviceFactory:
         loaded = load_zolix_library(devices_config.spectrometer.dll_path)
         configure_zolix_signatures(loaded)
         raw = ZolixRawClient(loaded)
+        raw.set_usb_mode(devices_config.spectrometer.usb_mode)
         device_id = raw.open_first_device()
         return ZolixSpectrometer(raw, device_id=device_id)
 
@@ -3381,7 +3545,7 @@ Modify `src/lab_auto/workflow/raman.py`:
 ```python
 @classmethod
 def real(cls, config: WorkflowConfig, *, stage, spectrometer, camera, light) -> "RamanWorkflow":
-    workflow = cls(config, False, camera, spectrometer, light)
+    workflow = cls(config, False, camera, spectrometer, light, "real")
     workflow.stage = stage
     return workflow
 
@@ -3474,6 +3638,9 @@ ramanctl workflow single --config configs/single_point.yaml --devices-config con
 - Zolix doctor reports Python 64-bit and finds required DLL dependencies.
 - DField FVB capture writes `pixel_index,intensity_raw,saturated` unless spectral calibration context is explicitly provided.
 - Single-point workflow writes `metadata.json`, `background.csv`, `raw.csv`, `corrected.csv`, and `run.log`.
+- `metadata.json` reports `"runtime_mode": "real"` in real mode and includes `camera.saturated_count`, `camera.saturation_threshold`, and `camera.raw_frames_count`.
+- `corrected.csv` subtracts the captured `background.csv` values, not placeholder constants.
+- DField workflow capture opens the camera once per raw client lifecycle and closes it through the workflow `finally` path.
 - Any failure path prompts the user to confirm laser-off state.
 ```
 
