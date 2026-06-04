@@ -186,6 +186,13 @@ lab_automation/
     test_workflow_dry_run.py
 ```
 
+配置文件提交规则：
+
+- 仓库只提交 `configs/devices.example.yaml` 和 `configs/single_point.example.yaml`。
+- 本地运行前由用户复制生成 `configs/devices.yaml`、`configs/devices.real.yaml` 和 `configs/single_point.yaml`。
+- `configs/devices.yaml` 用于 dry-run/simulated 开发默认值；`configs/devices.real.yaml` 用于真实实验电脑的 COM 口、DLL 路径和光源配置。
+- 本地 `.yaml` 运行配置可能包含机器路径、端口号和样品信息，不应提交。
+
 Phase 2 可以再加入以下占位模块，但 Phase 1 骨架不要求创建：
 
 - `src/lab_auto/workflow/mapping.py`
@@ -202,7 +209,7 @@ Phase 2 可以再加入以下占位模块，但 Phase 1 骨架不要求创建：
 SDK 边界分层：
 
 - `raw` 层只做最低层绑定：Zolix/DField 按 C header 定义 `ctypes` 签名，WayneLabs 按 PDF 编解码串口命令。该层保留 native 函数名和协议字段，包括厂家 SDK 中的拼写错误。
-- `adapter` 层暴露干净的 Python API，负责 DLL 搜索路径、枚举映射、输入校验、错误包装、状态转换和日志。
+- `adapter` 层暴露干净的 Python API，负责 DLL 搜索路径、枚举映射、输入校验、错误包装、状态转换和日志；adapter 不手写 native 函数名、`ctypes` 签名或串口协议字符串，只调用 `raw` 层 helper。
 - `workflow` 层只依赖 adapter 层，不直接导入 `ctypes`、厂家 Python demo 或手写串口命令字符串。
 
 实现约束：
@@ -210,6 +217,7 @@ SDK 边界分层：
 - 不复用厂家 Python demo 作为项目封装；demo 只能作为行为参考。
 - raw binding 的函数名、参数和返回值以 C header/PDF 为准。
 - adapter 层必须把 native 不优雅命名隔离起来，例如 Zolix 的 `spec_set_turret_enbale` 只能出现在 raw 层，业务层使用 `set_enabled_turret` 这类干净名字。
+- 硬件协议字符串和 native symbol 只能出现在 `src/lab_auto/devices/raw/*` 和对应 raw 层测试中；Agent、workflow、CLI 和 adapter 层都不得直接手写。
 - 数据模型不得暴露平台相关 `ctypes` 类型；所有采集结果进入 workflow 前转成 Python 基础类型或明确 dtype 的数组。
 
 ### 5.1 CLI 状态模型
@@ -240,7 +248,7 @@ Phase 1 明确定义三种运行模式：
 2. 其次读取设备配置文件中的 `runtime.mode`。
 3. 如果没有任何指定，默认视为 `dry_run`。
 
-示例 `devices.yaml` 默认使用 `dry_run`，避免误触硬件。真实上机验收应使用 `configs/devices.real.yaml`，或在命令中显式传入 `--real`。
+本地 `configs/devices.yaml` 默认使用 `dry_run`，避免误触硬件。真实上机验收应使用 `configs/devices.real.yaml`，或在命令中显式传入 `--real`。
 
 ## 6. 设备接口设计
 
@@ -678,7 +686,15 @@ pixel_index,intensity_raw,intensity_background,intensity_corrected,saturated_raw
 1,12410,101,12309,false,false
 ```
 
-单独执行 `camera capture --mode fvb --out ...` 时，没有背景和扣除结果，输出采用 `raw.csv` 的列集合。
+单独执行 `camera capture --mode fvb --out ...` 时，只有相机上下文，没有 Zolix 光栅、中心波长和像素到波长校准上下文。默认输出列为：
+
+```csv
+pixel_index,intensity_raw,saturated
+0,12345,false
+1,12410,false
+```
+
+只有在命令显式提供光谱标定上下文，且 `spec_pixels_to_waves` 或等价校准成功时，standalone capture 才允许增加 `wavelength_nm` 列。
 
 Phase 1 IMAGE 诊断输出格式：
 
@@ -690,11 +706,13 @@ Phase 1 IMAGE 诊断输出格式：
 - `intensity_corrected = intensity_raw - intensity_background`。
 - raw/background 的长度必须一致，否则工作流失败。
 - raw/background 的 `x_axis_type` 必须一致，否则工作流失败。
+- raw/background 的 `x` 数组必须逐点一致；`pixel_index` 轴要求整数完全一致，`wavelength_nm` 轴要求绝对误差不超过 `wavelength_tolerance_nm`，默认 `1e-6 nm`。超出容差时工作流失败。
+- raw/background 的采集轴元数据必须一致，至少包括 `read_mode`、`bin_x`、`bin_y`、`roi`、`detector_width`、`detector_height`、`grating`、`center_wavelength_nm` 和 `slit_width_um`。不一致时工作流失败。
 - Phase 1 不自动做平滑、峰识别、基线拟合或强度归一化。
 
 ## 10. 配置文件
 
-示例 `devices.yaml`：
+提交文件 `configs/devices.example.yaml`：
 
 ```yaml
 runtime:
@@ -732,9 +750,9 @@ light:
   manual_light_control: true
 ```
 
-`devices.yaml` 是开发默认配置，不应直接作为上机配置提交真实端口和路径。真实上机建议复制为 `configs/devices.real.yaml`，将 `runtime.mode` 改为 `real`，并填写目标电脑上的 DLL 路径、串口号和实际光源控制方式。
+使用时将 `configs/devices.example.yaml` 复制为本地 `configs/devices.yaml`。真实上机再复制为 `configs/devices.real.yaml`，将 `runtime.mode` 改为 `real`，并填写目标电脑上的 DLL 路径、串口号和实际光源控制方式。
 
-示例 `single_point.yaml`：
+提交文件 `configs/single_point.example.yaml`：
 
 ```yaml
 devices_config: configs/devices.yaml
@@ -765,7 +783,7 @@ output:
 配置加载规则：
 
 - 设备命令只读取设备配置：`--config configs/devices.yaml`。
-- 工作流命令读取工作流配置：`--config configs/single_point.yaml`。
+- 工作流命令读取工作流配置：`--config configs/single_point.yaml`。dry-run 验收也可以直接使用 `configs/single_point.example.yaml`。
 - 工作流配置中的 `devices_config` 指向默认设备配置。
 - 命令行 `--devices-config configs/devices.real.yaml` 覆盖 `devices_config`。
 - CLI runtime 参数覆盖所有配置文件中的 `runtime.mode`。
@@ -1059,7 +1077,7 @@ Fail 标准：
 
 后续 AI Agent 开发时应遵守：
 
-- 不直接操作硬件协议字符串，除非在设备 adapter 内。
+- 不直接操作硬件协议字符串或 native SDK symbol；只有 `src/lab_auto/devices/raw/*` 和对应 raw 层测试可以包含这些内容。
 - 不绕过安全层调用激光、归零、长距离移动。
 - 任何真实硬件动作都必须可 dry-run。
 - 每个实验动作必须写日志。

@@ -23,6 +23,10 @@ venv/
 .env.*
 *.local.yaml
 *.local.yml
+configs/*.yaml
+configs/*.yml
+!configs/*.example.yaml
+!configs/*.example.yml
 
 # IDE/project-local metadata
 .idea/
