@@ -166,6 +166,10 @@ lab_automation/
     logging.py
     devices/
       base.py
+      raw/
+        waynelabs_protocol.py
+        zolix_ctypes.py
+        dfield_ctypes.py
       waynelabs_stage.py
       zolix_spectrometer.py
       dfield_camera.py
@@ -194,6 +198,19 @@ Phase 2 可以再加入以下占位模块，但 Phase 1 骨架不要求创建：
 - CLI 调用工作流和设备接口，不直接操作 DLL 或串口。
 - 所有危险动作需要显式参数或配置，例如开启激光、长距离移动、归零。
 - 所有流程默认可 dry-run，输出将执行的动作和参数。
+
+SDK 边界分层：
+
+- `raw` 层只做最低层绑定：Zolix/DField 按 C header 定义 `ctypes` 签名，WayneLabs 按 PDF 编解码串口命令。该层保留 native 函数名和协议字段，包括厂家 SDK 中的拼写错误。
+- `adapter` 层暴露干净的 Python API，负责 DLL 搜索路径、枚举映射、输入校验、错误包装、状态转换和日志。
+- `workflow` 层只依赖 adapter 层，不直接导入 `ctypes`、厂家 Python demo 或手写串口命令字符串。
+
+实现约束：
+
+- 不复用厂家 Python demo 作为项目封装；demo 只能作为行为参考。
+- raw binding 的函数名、参数和返回值以 C header/PDF 为准。
+- adapter 层必须把 native 不优雅命名隔离起来，例如 Zolix 的 `spec_set_turret_enbale` 只能出现在 raw 层，业务层使用 `set_enabled_turret` 这类干净名字。
+- 数据模型不得暴露平台相关 `ctypes` 类型；所有采集结果进入 workflow 前转成 Python 基础类型或明确 dtype 的数组。
 
 ### 5.1 CLI 状态模型
 
@@ -326,8 +343,10 @@ spec.close()
 
 注意事项：
 
-- 厂家 Python Demo 不是权威封装；存在硬编码 DLL 路径、未实现函数和个别函数名错误。
+- 厂家 Python Demo 不是权威封装；存在硬编码 DLL 路径、未实现函数、签名错误和个别函数名错误。
 - 应以 `SDK/inc/spectrometer.h` 和 VS Demo 为准。
+- `spec_get_error` 在头文件中是 `void spec_get_error(int id, char* buff, int len)`；不得按 Python demo 中的两个参数和 `bool` 返回值实现。
+- 头文件中的 native 拼写错误必须只保留在 raw 层，例如 `spec_set_turret_enbale` 和 `spec_get_enbaled_turret`；adapter 层暴露拼写正确的业务方法。
 
 端口枚举映射：
 
@@ -385,6 +404,9 @@ camera.close()
 
 - DField C++ Demo 调用了 `a4_set_trigger_mode(1)`，但当前头文件和 DLL 导出符号都没有该函数。实现时不得依赖该调用。
 - `a4_single_capture` 返回原始 buffer；需要在封装层根据读出模式、ROI、binning 转成一维谱或二维图像。
+- DField API 没有设备 id、错误码、版本查询或多实例上下文，Phase 1 将其视为单相机全局状态 DLL。
+- `a4_close()` 返回 `void`，adapter 层只能记录关闭动作和捕获异常，不能把关闭结果伪装成硬件确认。
+- `a4_single_capture(long * buff, int size)` 的 `long` 是 Windows C `long` 语义；真实 DLL 调用只在 Windows 64-bit 验证。dry-run/mock 测试不得把 macOS/Linux 的 `ctypes.c_long` 宽度泄漏到数据模型。
 
 枚举映射：
 
@@ -1024,9 +1046,14 @@ Fail 标准：
 2. 位移台实际分辨率：PDF 示例不一定等于当前实验平台，需要老师或厂家确认丝杆导程、减速比和轴方向。
 3. 位移台没有绝对位置读取：软件坐标依赖归零和相对运动账本，断电或手动移动后必须重新归零。
 4. Windows DLL 位数：Python 位数必须与 DLL 位数一致，建议统一 64-bit。
-5. DField Demo 存在不匹配函数：不能依赖 `a4_set_trigger_mode`。
-6. 样品识别算法未定：需要和冯博士确定输入、输出、标定方式和失败策略。
-7. MAPS 当前电脑的软件内容稍有差异：上机时需要核对实际硬件连接、串口号、DLL 路径和光源控制方式。
+5. Zolix Python demo 不能直接复用：存在硬编码 DLL 路径、函数未封装完整、签名错误和函数名错误。
+6. Zolix native API 命名不干净：raw 层必须保留真实 symbol，adapter 层必须暴露干净业务名。
+7. DField Demo 存在不匹配函数：不能依赖 `a4_set_trigger_mode`。
+8. DField SDK 诊断能力弱：无设备 id、无错误码、无版本查询，Phase 1 只能按单相机全局状态 DLL 处理。
+9. DField `long*` buffer 只能在 Windows 真实调用语境下解释；跨平台测试必须使用平台无关的数据模型。
+10. WayneLabs 协议对命令完整性和超时敏感：必须集中测试命令编码、返回解析、重试策略和坐标状态机。
+11. 样品识别算法未定：需要和冯博士确定输入、输出、标定方式和失败策略。
+12. MAPS 当前电脑的软件内容稍有差异：上机时需要核对实际硬件连接、串口号、DLL 路径和光源控制方式。
 
 ## 17. 后续 Agent 开发约束
 

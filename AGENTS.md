@@ -7,6 +7,8 @@ Guidance for agents working in this repository.
 - This repository is for laboratory automation around Raman/PL experiments.
 - Prefer wrapping documented hardware APIs and SDKs over GUI automation.
 - Treat vendor SDKs, drivers, examples, and manuals as reference artifacts. Do not reformat or rewrite them unless explicitly requested.
+- Do not import or reuse vendor demo code as the project adapter. Use C headers and protocol PDFs for raw bindings, then wrap them in a small adapter layer.
+- Keep SDK rough edges inside the boundary layer: native function names and protocol strings stay in raw bindings; workflow code only sees clean Python APIs.
 - Default implementation and tests should support dry-run or simulated mode before touching real hardware.
 - Hardware movement, light-source control, and mapping workflows must include explicit safety assumptions and verifiable pass/fail criteria.
 
