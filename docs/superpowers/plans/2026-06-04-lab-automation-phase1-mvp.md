@@ -18,6 +18,7 @@ Repository constraints: `AGENTS.md`
 
 SDK references:
 - WayneLabs protocol: `Waynelabs SDK Instructions.pdf`
+- PWM light-controller protocol: `多路(5+1)路PWM信号发生器通讯协议说明.doc` (reference only for Phase 2; Phase 1 keeps light control manual/simulated)
 - Zolix header: `光谱议控制SDK-32&64bit-20250429/SDK/inc/spectrometer.h`
 - DField header: `DField-VS-A4-SDK-20250619/dfield-vs-a4.h`
 
@@ -79,6 +80,7 @@ Responsibilities:
 - Keep real hardware commands guarded by `--real`.
 - Keep committed example configs self-contained: `configs/single_point.example.yaml` must reference `configs/devices.example.yaml`; lab-local real config is supplied with `--devices-config configs/devices.real.yaml`.
 - Do not create `workflow/mapping.py`, `agent/tool_schema.py`, daemon/session code, or real light-controller integration in Phase 1.
+- Do not create PWM Modbus or HTTP light-controller backends in Phase 1; the PWM protocol is now known, but implementation remains Phase 2 after channel mapping, safety interlock, and bench acceptance are confirmed.
 
 ---
 
@@ -3695,7 +3697,7 @@ Out of Phase 1:
 - Mapping grid scan.
 - Agent tool schema.
 - daemon/session/shell mode.
-- Real light-controller protocol.
+- Real PWM Modbus or HTTP light-controller backend implementation.
 - Automatic exposure, peak detection, baseline correction, and batch scheduling.
 
 Plan quality checks:
