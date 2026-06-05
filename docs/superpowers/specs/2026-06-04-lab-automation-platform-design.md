@@ -10,6 +10,7 @@
 
 - `自动化主要流程.docx`：老师整理的 MAPS/WayneLabs 软件人工操作流程。
 - `Waynelabs SDK Instructions.pdf`：WayneLabs 电动位移台和电动光路组件的串口通信说明。
+- `多路(5+1)路PWM信号发生器通讯协议说明.doc`：激光和白光 PWM 信号发生器的 RS485 Modbus RTU 通讯协议。
 - `光谱议控制SDK-32&64bit-20250429/`：Zolix 光谱仪/单色仪 SDK、驱动、C++/LabVIEW/Python Demo。
 - `DField-VS-A4-SDK-20250619/`：DField-VS-A4 CCD/相机探测器 SDK 和 C++ Demo。
 
@@ -107,10 +108,17 @@
   - `laser_off()`
   - `led_on()`
   - `led_off()`
-  - `set_power(percent_or_raw)`
+  - `set_intensity_percent(percent)`
   - `get_state()`
 
-当前资料只说明 WayneLabs 有多路 PWM 信号发生器，可用于 LED 光源、激光光源开关和同步触发，但尚未提供该控制器的具体协议。因此第一阶段将光源控制作为可插拔接口，提供 simulated 实现和明确错误提示，待拿到协议或在目标电脑上识别实际控制方式后补真实实现。
+厂家已确认激光和白光都由多路 PWM 信号发生器输出控制，当前可通过 RS485 Modbus RTU 控制对应通道。自动化软件必须把该控制器作为独立光源适配器处理，Phase 1 默认仍允许 `manual_light_control=true`；Phase 2 真实后端只有在配置显式给出串口、非零站号、LED/激光通道映射和 5.0 V 安全上限后，才允许自动打开光源。
+
+安全假设：
+
+- PWM 输出电压不得超过 5.0 V。根据协议文档，输出电压寄存器 `Reg1` 的单位为 0.1 V，因此 5.0 V 对应十进制 `50`、寄存器字 `0x0032`、线缆字节 `00 32`；不得把 `0x0050` 当作 5.0 V。
+- `Reg1` 是全局共享输出电压，协议注释说明 `5+1` 路 PWM 电压和数控电源输出电压相同；它不是单个通道的独立电压。
+- 协议文档列出 CH1-CH5 的频率、占空比和输出状态；`5+1` 中的 `+1` 暂按共享数控电源输出端处理，不按独立 PWM 通道使用，除非厂家后续确认接线和用途。
+- 厂家正在测试通过 HTTP 端口开放 API 的新版软件。该 API 上线后可以作为 `LightController` 的 Phase 2 后端，但不得允许 Agent、配置文件或工作流透传任意 HTTP 命令，且必须保留同样的 5.0 V 上限、通道映射、状态读回和 dry-run 安全行为。
 
 ### 4.4 样品识别与定位
 
@@ -209,13 +217,14 @@ Phase 2 可以再加入以下占位模块，但 Phase 1 骨架不要求创建：
 SDK 边界分层：
 
 - `raw` 层只做最低层绑定：Zolix/DField 按 C header 定义 `ctypes` 签名，WayneLabs 按 PDF 编解码串口命令。该层保留 native 函数名和协议字段，包括厂家 SDK 中的拼写错误。
+- 真实光源接入时，PWM 信号发生器的 Modbus RTU 帧、寄存器地址和 CRC 只能出现在 `raw` 层；adapter、workflow、CLI 和 Agent 只能使用 `LightController` 的业务方法。raw 层解析任何 PWM 响应时必须校验 CRC、响应站号等于请求的非零站号、功能码匹配且不是 Modbus 异常响应、长度或 byte count 与请求寄存器数一致；不满足则视为读回失败，不得更新安全状态。
 - `adapter` 层暴露干净的 Python API，负责 DLL 搜索路径、枚举映射、输入校验、错误包装、状态转换和日志；adapter 不手写 native 函数名、`ctypes` 签名或串口协议字符串，只调用 `raw` 层 helper。
 - `workflow` 层只依赖 adapter 层，不直接导入 `ctypes`、厂家 Python demo 或手写串口命令字符串。
 
 实现约束：
 
 - 不复用厂家 Python demo 作为项目封装；demo 只能作为行为参考。
-- raw binding 的函数名、参数和返回值以 C header/PDF 为准。
+- raw 层的函数签名、寄存器地址和协议字段以 C header、PDF 或厂家协议文档为准。
 - adapter 层必须把 native 不优雅命名隔离起来，例如 Zolix 的 `spec_set_turret_enbale` 只能出现在 raw 层，业务层使用 `set_enabled_turret` 这类干净名字。
 - 硬件协议字符串和 native symbol 只能出现在 `src/lab_auto/devices/raw/*` 和对应 raw 层测试中；Agent、workflow、CLI 和 adapter 层都不得直接手写。
 - 数据模型不得暴露平台相关 `ctypes` 类型；所有采集结果进入 workflow 前转成 Python 基础类型或明确 dtype 的数组。
@@ -466,7 +475,7 @@ DField DLL 搜索路径：
 
 ### 6.5 光源控制器
 
-第一阶段定义接口，不绑定具体硬件：
+Phase 1 仅定义统一接口、manual/simulated 后端和真实光源后端的安全约束；真实 PWM Modbus 或 HTTP 后端接入属于 Phase 2，需上机确认通道映射、安全联锁和验收标准后实施：
 
 ```python
 light = LightController.open(mode="manual")
@@ -474,18 +483,36 @@ light.led_on()
 light.led_off()
 light.laser_on()
 light.laser_off()
-light.set_power(10)
 light.get_state()
 ```
 
-真实实现待确认以下信息：
+已确认的 PWM 控制器协议：
 
-- 激光是否由 WayneLabs PWM 信号发生器控制。
-- PWM 控制器是否也采用同一串口协议。
-- MAPS 当前电脑中是否有额外 DLL、串口、USB HID 或网口接口。
+- 通信方式：RS485 Modbus RTU。
+- 串口参数：默认 9600 baud、8 data bits、no parity、1 stop bit；协议文档还支持 4800、19200、38400、57600、115200。
+- 站号：协议示例使用 `0x01`；普通读写必须拒绝 `station_id=0`。改地址命令要求站号为 `0` 且总线上只能有一个从机，因此只能放在独立维护流程中执行，并要求物理确认总线上仅一台设备、所有输出已关闭。
+- 支持功能码：`0x03` 读寄存器、`0x06` 写单个寄存器、`0x10` 写多个寄存器。
+- 寄存器范围：`Reg0` 只读，`Reg1-Reg25` 可读写；文档示例主要使用 `Reg1-Reg24`。`Reg25` 用途未定义，项目不得写入，除非厂家另行确认。
+- `Reg1`：全局共享输出电压，单位 0.1 V。真实适配器必须拒绝写入高于 5.0 V 的值，并在打开 LED/激光通道前读回确认该寄存器为十进制 `50`，即 `0x0032`。若需要写入，写入前必须先用 `0x03` 读回 `Reg17-Reg21` 并确认所有 PWM 输出状态均为 `0`；若任何通道已开启，必须先进入关闭或人工确认流程，不得直接修改 `Reg1`。确认数控电源输出端接线安全后，才允许写 `0x0032`，写后必须再次用 `0x03` 读回确认。
+- `Reg2-Reg11`：CH1-CH5 频率，每个通道使用高 16 位和低 16 位组成 32-bit Hz 值。
+- `Reg12-Reg16`：CH1-CH5 占空比，单位 0.1%。
+- `Reg17-Reg21`：CH1-CH5 输出状态，`0` 为关闭，`1` 为打开。
+- `Reg22`：当前显示通道。
+- `Reg23`：按键锁，`0` 为关闭，`1` 为打开；普通光源工作流不得写入，避免削弱面板人工干预能力。
+- `Reg24`：波特率枚举，`0=4800`、`1=9600`、`2=19200`、`3=38400`、`4=57600`、`5=115200`；普通光源工作流不得写入，避免光源打开后通信丢失。
+
+真实实现仍需确认以下信息：
+
+- 目标 Windows 电脑上的实际 COM 口、站号和接线方式。
+- 白光与激光分别接在哪个 PWM 通道。
+- 白光和激光需要的频率、占空比、默认关闭状态，以及 MAPS 软件是否会改写这些参数。
+- 数控电源输出端是否接入负载；在确认接线安全前，真实自动模式不得写 `Reg1` 或打开任何 PWM 通道。
 - 激光安全联锁状态能否软件读取。
+- 厂家 HTTP API 上线后的端口、命令字符串、状态读取能力和错误返回格式。
 
-在真实接口确认前，工作流必须支持 `manual_light_control=true`，即在需要开关激光时提示人工操作并等待确认。
+在真实接口确认前，工作流必须支持 `manual_light_control=true`，即在需要开关激光时提示人工操作并等待确认。Phase 2 接入真实 PWM 后端时，`laser_on()` 和 `led_on()` 必须先验证：串口打开、非零站号响应、通道映射存在、`Reg1 == 0x0032`、非目标/未知通道关闭、数控电源输出端接线已确认安全、目标通道频率和占空比与配置中的 `frequency_hz` 和 `duty_percent` 匹配。写目标输出状态后必须读回对应 `Reg17-Reg21` 确认为 `1`。只有 `laser_on()` 完成这些读回后才允许设置 `laser_state=on_confirmed`；`led_on()` 只能设置独立 `led_state`，不得满足 `acquire_sample()` 的激光前置条件。`laser_off()`、`led_off()` 和异常处理必须 best-effort 关闭所有已配置光源通道，并读回对应输出状态为 `0`；失败时进入人工确认。
+
+PWM 后端默认不支持通用 `set_intensity_percent(percent)`。如后续确认需要支持，它只能映射到经验证的单通道 `frequency_hz` 或 `duty_percent` 配置，不得把强度设置映射为修改 `Reg1` 全局输出电压。HTTP 后端也只能暴露 typed `LightController` 方法；如果不能读回电压和输出状态，不得进入 `laser_state=on_confirmed` 或 `led_state=on_confirmed`。
 
 ## 7. CLI 设计
 
@@ -748,6 +775,25 @@ camera:
 light:
   type: manual
   manual_light_control: true
+  # Phase 2 真实 PWM 控制器接入后使用以下形态；通道和 setpoint 必须上机确认后填写。
+  # type: pwm_modbus
+  # manual_light_control: false
+  # port: COMx
+  # station_id: 1
+  # baudrate: 9600
+  # max_output_voltage_v: 5.0
+  # required_output_voltage_v: 5.0
+  # channels:
+  #   led:
+  #     channel: 1
+  #     frequency_hz: 1000
+  #     duty_percent: 5.0
+  #     default_off_required: true
+  #   laser:
+  #     channel: 2
+  #     frequency_hz: 1000
+  #     duty_percent: 5.0
+  #     default_off_required: true
 ```
 
 使用时将 `configs/devices.example.yaml` 复制为本地 `configs/devices.yaml`。真实上机再复制为 `configs/devices.real.yaml`，将 `runtime.mode` 改为 `real`，并填写目标电脑上的 DLL 路径、串口号和实际光源控制方式。
@@ -848,33 +894,53 @@ WayneLabs 串口协议没有提供绝对位置读取接口，因此软件必须�
 
 ### 12.2 光源状态机
 
-光源控制在 Phase 1 可能是 manual 模式，因此也需要显式状态。
+光源控制在 Phase 1 可能是 manual 模式，因此也需要显式状态。以下状态机约束 Raman/PL 采集所需的激光状态；LED/白光状态必须单独记录，`led_on()` 不得让样品采集进入 `on_confirmed`。
 
-光源状态：
+激光状态：
 
-- `unknown`：软件不知道激光/LED 状态。
-- `manual_wait`：软件正在等待人工确认光源状态。
+- `unknown`：软件不知道激光状态。
+- `manual_wait`：软件正在等待人工确认激光状态。
 - `off_confirmed`：用户或真实控制器确认激光关闭。
 - `on_confirmed`：用户或真实控制器确认激光打开。
+
+LED 状态：
+
+- `unknown`：软件不知道 LED/白光状态。
+- `off_confirmed`：用户或真实控制器确认 LED/白光关闭。
+- `on_confirmed`：用户或真实控制器确认 LED/白光打开。
 
 动作规则：
 
 - `manual_light_control: true` 时，工作流在 `laser_on` 和 `laser_off` 步骤必须打印明确提示，并等待用户确认。
-- 采集背景前必须进入 `off_confirmed`。
-- 采集样品前必须进入 `on_confirmed`。
-- 工作流异常退出时必须提示用户确认激光关闭；如果后续接入真实光源控制器，则异常处理优先调用 `laser_off()`。
+- `type: pwm_modbus` 时，工作流不得允许未配置通道映射的 `laser_on()` 或 `led_on()`；真实适配器必须在打开通道前读回确认 `Reg1 == 0x0032`。如需写入 `Reg1`，写后必须再次用 `0x03` 读回确认。
+- 真实 PWM 后端打开通道前必须读回 `Reg17-Reg21`，确认非目标/未知通道关闭；还必须读回目标通道频率和占空比，并与配置中的 `frequency_hz` 和 `duty_percent` 匹配。
+- 采集背景前必须进入 `laser_state=off_confirmed`。
+- 采集样品前必须进入 `laser_state=on_confirmed`。
+- `led_on()` 只能设置 `led_state=on_confirmed`，不得改变 `laser_state`，也不得满足样品采集的激光前置条件。
+- 工作流异常退出时必须提示用户确认激光关闭；如果后续接入真实光源控制器，则异常处理优先关闭所有已配置光源通道，并读回确认对应输出状态为 `0`，失败时进入人工确认。
 
 ### 12.3 通用安全约束
 
-必须实现的安全约束：
+Phase 1 必须实现的安全约束：
 
-- 开启激光前输出明确提示；真实光源控制未接入前必须人工确认。
+- 开启激光前输出明确提示；真实光源控制未启用或未完成上机确认前必须人工确认。
 - 归零和长距离移动必须要求 `--yes` 或配置中的显式允许。
 - 位移台维护软限位，超出范围拒绝执行。
 - 串口命令必须完整发送，避免硬件超时后残留半条命令。
 - 每个硬件动作设置超时，超时后进入错误状态。
 - 发生错误时优先关闭激光或提示人工关闭激光，再停止采集。
 - `dry_run` 是默认开发模式，真实硬件模式必须显式指定为 `real`。
+
+Phase 2 接入真实 PWM Modbus 或 HTTP 光源后端时必须额外实现的安全约束：
+
+- PWM 光源控制器的输出电压硬上限为 5.0 V；任何配置、命令、HTTP 后端请求参数、请求体或等价命令若会设置更高电压，必须在软件层拒绝。
+- `Reg1` 的 5.0 V 安全值必须按十进制 `50`、寄存器字 `0x0032`、线缆字节 `00 32` 处理；不得使用 `0x0050` 表示 5.0 V。
+- 普通光源工作流禁止写 `Reg23`、`Reg24`、`Reg25` 和改地址命令；普通读写必须拒绝 `station_id=0`。
+- 任何写 `Reg1` 操作前必须先用 `0x03` 读回 `Reg17-Reg21`，确认所有 PWM 输出状态均为 `0`；若任一通道已开启，必须先关闭并读回确认，或进入人工确认，不得直接修改 `Reg1`。
+- PWM Modbus 写操作必须用 `0x03` 读回校验；仅依赖 `0x06` 或 `0x10` 返回帧不算状态确认。
+- PWM Modbus 读回必须来自完整有效响应：CRC 正确、响应站号等于请求的非零站号、功能码匹配且不是异常响应、长度或 byte count 与请求寄存器数一致。
+- 打开任一光源通道前必须读回全局输出电压、所有通道输出状态、目标通道频率和目标通道占空比；无法确认配置中的 `frequency_hz` 和 `duty_percent` 时不得进入对应状态。
+- HTTP 后端只能暴露 typed `LightController` 方法，不允许 Agent、配置文件或工作流透传任意 URL、请求体或厂家命令字符串；HTTP 后端不能读回电压和输出状态时，不得进入 `laser_state=on_confirmed` 或 `led_state=on_confirmed`。
 
 ## 13. 测试策略
 
@@ -896,6 +962,18 @@ WayneLabs 串口协议没有提供绝对位置读取接口，因此软件必须�
 6. 人工控制激光的背景采集和样品采集。
 7. 单点自动工作流。
 8. Mapping 只做接口预留，不进入 Phase 1 真机验收。
+
+Phase 2 真实光源后端验收点：
+
+- 缺少 LED/激光通道映射、`frequency_hz`、`duty_percent` 或 `default_off_required: true` 时，`laser_on()` 和 `led_on()` 必须失败，不得写输出状态寄存器。
+- 配置电压高于 5.0 V、把 5.0 V 写成 `0x0050`、`station_id=0`、或尝试写 `Reg23`/`Reg24`/`Reg25`/改地址命令时，必须在软件层拒绝。
+- 写 `Reg1` 前必须读回 `Reg17-Reg21` 全部为 `0`；若任何 PWM 输出已开启，必须失败或先关闭并读回确认，不得直接修改 `Reg1`。
+- 打开通道前必须读回 `Reg1 == 0x0032`、所有通道输出状态、目标通道频率和目标通道占空比；任一读回与配置不匹配都不得进入对应状态。
+- 执行 `led_on()` 后 `laser_state` 必须保持非 `on_confirmed`；此时直接执行样品采集必须失败。
+- 写 `Reg1` 或输出状态后必须再次用 `0x03` 读回确认；只收到 `0x06` 或 `0x10` 返回帧不算通过。
+- 读回帧 CRC 错误、站号不匹配、功能码异常、长度或 byte count 不匹配时，必须视为失败，不得更新光源状态。
+- 异常退出路径必须尝试关闭所有已配置光源通道，并读回对应 `Reg17-Reg21` 为 `0`；失败时必须提示人工确认。
+- HTTP 后端不能读回电压和输出状态，或允许透传任意 URL/请求体/厂家命令字符串时，不得进入真实光源自动控制验收。
 
 ## 14. 第一阶段开发里程碑
 
@@ -1055,12 +1133,12 @@ Fail 标准：
 - 样品识别和定位算法接入。
 - Agent tool schema 和权限系统。
 - `ramanctl shell` 或 daemon/session 模式。
-- 真实光源控制器接入。
+- 真实光源控制器接入：已有 PWM Modbus RTU 协议，可在上机确认通道映射和安全联锁后实现；厂家 HTTP API 上线后作为替代后端评估。
 - 自动曝光、峰识别、基线校正、批量任务调度。
 
 ## 16. 风险和待确认事项
 
-1. 光源控制协议缺失：需要确认激光和 LED 的真实控制器、协议和安全联锁。
+1. 光源控制协议已获取，但仍需确认白光/激光通道映射、实际 COM 口、站号、默认频率/占空比、输出电压是否全通道共享，以及激光安全联锁能否软件读取。
 2. 位移台实际分辨率：PDF 示例不一定等于当前实验平台，需要老师或厂家确认丝杆导程、减速比和轴方向。
 3. 位移台没有绝对位置读取：软件坐标依赖归零和相对运动账本，断电或手动移动后必须重新归零。
 4. Windows DLL 位数：Python 位数必须与 DLL 位数一致，建议统一 64-bit。
