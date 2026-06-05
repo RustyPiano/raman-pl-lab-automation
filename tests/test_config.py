@@ -95,6 +95,100 @@ light: {type: manual, manual_light_control: true}
         load_devices_config(path)
 
 
+def test_load_devices_config_rejects_malformed_soft_limits(tmp_path: Path):
+    path = tmp_path / "devices.yaml"
+    path.write_text(
+        """
+runtime: {mode: dry_run, log_level: info}
+stage:
+  type: waynelabs_linear
+  port: COM5
+  baudrate: 9600
+  resolution_um: {x: 0.04, y: 0.04, z: 0.04}
+  default_speed: 8
+  soft_limits_um: {x: [-5000], y: [-5000, 5000], z: [-1000, 1000]}
+  state_file: state/stage_position.json
+  max_unknown_move_um: 100
+spectrometer: {type: zolix, dll_path: C:/SDK/spectrometer_x64.dll, usb_mode: true}
+camera: {type: dfield_vs_a4, dll_path: C:/SDK/dfield-vs-a4.dll}
+light: {type: manual, manual_light_control: true}
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="soft_limits_um"):
+        load_devices_config(path)
+
+
+def test_load_devices_config_rejects_non_positive_resolution(tmp_path: Path):
+    path = tmp_path / "devices.yaml"
+    path.write_text(
+        """
+runtime: {mode: dry_run, log_level: info}
+stage:
+  type: waynelabs_linear
+  port: COM5
+  baudrate: 9600
+  resolution_um: {x: 0, y: 0.04, z: 0.04}
+  default_speed: 8
+  soft_limits_um: {x: [-5000, 5000], y: [-5000, 5000], z: [-1000, 1000]}
+  state_file: state/stage_position.json
+  max_unknown_move_um: 100
+spectrometer: {type: zolix, dll_path: C:/SDK/spectrometer_x64.dll, usb_mode: true}
+camera: {type: dfield_vs_a4, dll_path: C:/SDK/dfield-vs-a4.dll}
+light: {type: manual, manual_light_control: true}
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="resolution_um"):
+        load_devices_config(path)
+
+
+@pytest.mark.parametrize(
+    ("field_replacement", "message"),
+    [
+        ("baudrate: .inf", "baudrate"),
+        ("default_speed: .inf", "default_speed"),
+        ("default_speed: true", "default_speed"),
+        ("resolution_um: {x: .inf, y: 0.04, z: 0.04}", "resolution_um"),
+        ("soft_limits_um: {x: [.nan, 5000], y: [-5000, 5000], z: [-1000, 1000]}", "soft_limits_um"),
+        ("max_unknown_move_um: .nan", "max_unknown_move_um"),
+    ],
+)
+def test_load_devices_config_rejects_non_finite_stage_numbers(tmp_path: Path, field_replacement, message):
+    path = tmp_path / "devices.yaml"
+    text = """
+runtime: {mode: dry_run, log_level: info}
+stage:
+  type: waynelabs_linear
+  port: COM5
+  baudrate: 9600
+  resolution_um: {x: 0.04, y: 0.04, z: 0.04}
+  default_speed: 8
+  soft_limits_um: {x: [-5000, 5000], y: [-5000, 5000], z: [-1000, 1000]}
+  state_file: state/stage_position.json
+  max_unknown_move_um: 100
+spectrometer: {type: zolix, dll_path: C:/SDK/spectrometer_x64.dll, usb_mode: true}
+camera: {type: dfield_vs_a4, dll_path: C:/SDK/dfield-vs-a4.dll}
+light: {type: manual, manual_light_control: true}
+"""
+    if field_replacement.startswith("resolution_um"):
+        text = text.replace("resolution_um: {x: 0.04, y: 0.04, z: 0.04}", field_replacement)
+    elif field_replacement.startswith("soft_limits_um"):
+        text = text.replace("soft_limits_um: {x: [-5000, 5000], y: [-5000, 5000], z: [-1000, 1000]}", field_replacement)
+    elif field_replacement.startswith("baudrate"):
+        text = text.replace("baudrate: 9600", field_replacement)
+    elif field_replacement.startswith("default_speed"):
+        text = text.replace("default_speed: 8", field_replacement)
+    else:
+        text = text.replace("max_unknown_move_um: 100", field_replacement)
+    path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(ConfigError, match=message):
+        load_devices_config(path)
+
+
 def test_workflow_config_links_devices_config(tmp_path: Path):
     path = tmp_path / "single_point.yaml"
     path.write_text(
@@ -126,6 +220,158 @@ output:
     assert config.optics.entrance_port == "side"
     assert config.optics.exit_port == "direct"
     assert config.acquisition.gain == "low"
+
+
+def test_load_workflow_config_rejects_non_finite_exposure(tmp_path: Path):
+    path = tmp_path / "single_point.yaml"
+    path.write_text(
+        """
+devices_config: configs/devices.example.yaml
+sample: {id: sample-001, operator: lab}
+optics:
+  entrance_port: side
+  exit_port: direct
+  grating: 1
+  center_wavelength_nm: 600
+  slit_width_um: 100
+acquisition:
+  exposure_ms: .inf
+  gain: low
+  read_mode: fvb
+  frames: 1
+  subtract_background: true
+output:
+  directory: output/measurements
+  formats: [csv, json]
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="exposure_ms"):
+        load_workflow_config(path)
+
+
+@pytest.mark.parametrize(
+    ("replacement", "message"),
+    [
+        ("grating: .inf", "grating"),
+        ("slit_width_um: .inf", "slit_width_um"),
+        ("frames: .inf", "frames"),
+    ],
+)
+def test_load_workflow_config_rejects_non_finite_integer_fields(tmp_path: Path, replacement, message):
+    path = tmp_path / "single_point.yaml"
+    text = """
+devices_config: configs/devices.example.yaml
+sample: {id: sample-001, operator: lab}
+optics:
+  entrance_port: side
+  exit_port: direct
+  grating: 1
+  center_wavelength_nm: 600
+  slit_width_um: 100
+acquisition:
+  exposure_ms: 1000
+  gain: low
+  read_mode: fvb
+  frames: 1
+  subtract_background: true
+output:
+  directory: output/measurements
+  formats: [csv, json]
+"""
+    if replacement.startswith("grating"):
+        text = text.replace("grating: 1", replacement)
+    elif replacement.startswith("slit_width_um"):
+        text = text.replace("slit_width_um: 100", replacement)
+    else:
+        text = text.replace("frames: 1", replacement)
+    path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(ConfigError, match=message):
+        load_workflow_config(path)
+
+
+def test_load_devices_config_rejects_fractional_integer_field(tmp_path: Path):
+    path = tmp_path / "devices.yaml"
+    path.write_text(
+        """
+runtime: {mode: dry_run, log_level: info}
+stage:
+  type: waynelabs_linear
+  port: COM5
+  baudrate: 9600
+  resolution_um: {x: 0.04, y: 0.04, z: 0.04}
+  default_speed: 8.5
+  soft_limits_um: {x: [-5000, 5000], y: [-5000, 5000], z: [-1000, 1000]}
+  state_file: state/stage_position.json
+  max_unknown_move_um: 100
+spectrometer: {type: zolix, dll_path: C:/SDK/spectrometer_x64.dll, usb_mode: true}
+camera: {type: dfield_vs_a4, dll_path: C:/SDK/dfield-vs-a4.dll}
+light: {type: manual, manual_light_control: true}
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="default_speed"):
+        load_devices_config(path)
+
+
+def test_load_devices_config_rejects_malformed_yaml(tmp_path: Path):
+    path = tmp_path / "devices.yaml"
+    path.write_text("runtime: [\n", encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="configuration YAML is invalid"):
+        load_devices_config(path)
+
+
+def test_load_devices_config_preserves_large_integer_field_without_float_rounding(tmp_path: Path):
+    path = tmp_path / "devices.yaml"
+    path.write_text(
+        """
+runtime: {mode: dry_run, log_level: info}
+stage:
+  type: waynelabs_linear
+  port: COM5
+  baudrate: 9007199254740993
+  resolution_um: {x: 0.04, y: 0.04, z: 0.04}
+  default_speed: 8
+  soft_limits_um: {x: [-5000, 5000], y: [-5000, 5000], z: [-1000, 1000]}
+  state_file: state/stage_position.json
+  max_unknown_move_um: 100
+spectrometer: {type: zolix, dll_path: C:/SDK/spectrometer_x64.dll, usb_mode: true}
+camera: {type: dfield_vs_a4, dll_path: C:/SDK/dfield-vs-a4.dll}
+light: {type: manual, manual_light_control: true}
+""",
+        encoding="utf-8",
+    )
+
+    assert load_devices_config(path).stage.baudrate == 9007199254740993
+
+
+def test_load_devices_config_rejects_unparseably_huge_integer_field(tmp_path: Path):
+    path = tmp_path / "devices.yaml"
+    path.write_text(
+        f"""
+runtime: {{mode: dry_run, log_level: info}}
+stage:
+  type: waynelabs_linear
+  port: COM5
+  baudrate: {"1" + "0" * 5000}
+  resolution_um: {{x: 0.04, y: 0.04, z: 0.04}}
+  default_speed: 8
+  soft_limits_um: {{x: [-5000, 5000], y: [-5000, 5000], z: [-1000, 1000]}}
+  state_file: state/stage_position.json
+  max_unknown_move_um: 100
+spectrometer: {{type: zolix, dll_path: C:/SDK/spectrometer_x64.dll, usb_mode: true}}
+camera: {{type: dfield_vs_a4, dll_path: C:/SDK/dfield-vs-a4.dll}}
+light: {{type: manual, manual_light_control: true}}
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="configuration YAML is invalid"):
+        load_devices_config(path)
 
 
 def test_load_workflow_and_devices_allows_devices_override(tmp_path: Path):

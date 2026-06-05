@@ -1,5 +1,5 @@
 from lab_auto.errors import ConfigError, DeviceError
-from lab_auto.devices.optics_validation import validate_zolix_optics
+from lab_auto.devices.optics_validation import validate_zolix_optics, validate_zolix_pixels_to_waves_args
 
 
 def require_ok(action: str, ok: bool) -> bool:
@@ -71,6 +71,7 @@ class ZolixSpectrometer:
         count: int,
         bin_x: int,
     ) -> list[float]:
+        validate_zolix_pixels_to_waves_args(turret=turret, grating=grating, center_wavelength_nm=center_wavelength_nm, width=width, count=count, bin_x=bin_x)
         return self.raw.pixels_to_waves(
             self.device_id,
             turret=turret,

@@ -43,6 +43,7 @@ DEVICE_TYPES = {
 
 
 def split_steps(steps: int) -> list[int]:
+    steps = _validate_integer(steps, field="steps")
     if steps < 0:
         raise ProtocolError("steps must be non-negative")
     chunks: list[int] = []
@@ -62,20 +63,29 @@ def _direction_code(axis: str, direction: str) -> str:
     return DIRECTION_CODES[key]
 
 
-def _validate_speed(speed: int) -> None:
+def _validate_speed(speed: int) -> int:
+    speed = _validate_integer(speed, field="speed")
     if speed < 0 or speed > 9:
         raise ProtocolError("speed must be between 0 and 9")
+    return speed
+
+
+def _validate_integer(value: int, *, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ProtocolError(f"{field} must be an integer")
+    return value
 
 
 def build_move_command(*, axis: str, steps: int, speed: int, direction: str) -> str:
-    _validate_speed(speed)
+    speed = _validate_speed(speed)
+    steps = _validate_integer(steps, field="steps")
     if steps < 1 or steps > 9999:
         raise ProtocolError("move steps must be between 1 and 9999")
     return f"?X{speed}{steps:04d}{_direction_code(axis, direction)}"
 
 
 def build_home_command(*, axis: str, speed: int, direction: str) -> str:
-    _validate_speed(speed)
+    speed = _validate_speed(speed)
     return f"?X{speed}0000{_direction_code(axis, direction)}"
 
 

@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 
 import pytest
@@ -102,7 +103,19 @@ def test_adapter_passes_requested_bin_and_roi_to_raw():
     assert raw.calls == [("capture", 1, 100, 1, 2, 2, 3, (1, 4, 3, 6))]
 
 
-@pytest.mark.parametrize("kwargs", [{"bin_x": 0}, {"bin_x": 65}, {"bin_y": 0}, {"bin_y": 130}, {"roi": (2, 1, 0, 7)}])
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"bin_x": 0},
+        {"bin_x": 65},
+        {"bin_y": 0},
+        {"bin_y": 130},
+        {"roi": (2, 1, 0, 7)},
+        {"roi": (0, math.nan, 0, 1)},
+        {"roi": (0, 1.5, 0, 1)},
+        {"roi": (True, 1, 0, 1)},
+    ],
+)
 def test_adapter_validates_bin_and_roi_before_raw_capture(kwargs):
     raw = FakeDFieldRaw()
     camera = DFieldCamera(raw)
@@ -119,6 +132,48 @@ def test_adapter_rejects_fvb_roi_before_raw_capture():
 
     with pytest.raises(ConfigError, match="ROI"):
         camera.capture(read_mode="fvb", exposure_ms=100, gain="low", frames=1, roi=(0, 1, 0, 0))
+
+    assert raw.calls == []
+
+
+@pytest.mark.parametrize("kwargs", [{"frames": math.nan}, {"frames": 1, "bin_x": math.nan}, {"frames": 1, "bin_y": math.nan}])
+def test_adapter_rejects_non_finite_integer_capture_args(kwargs):
+    raw = FakeDFieldRaw()
+    camera = DFieldCamera(raw)
+    frames = kwargs.pop("frames")
+
+    with pytest.raises(ConfigError):
+        camera.capture(read_mode="image", exposure_ms=100, gain="low", frames=frames, **kwargs)
+
+    assert raw.calls == []
+
+
+def test_adapter_rejects_huge_integer_exposure():
+    raw = FakeDFieldRaw()
+    camera = DFieldCamera(raw)
+
+    with pytest.raises(ConfigError, match="exposure"):
+        camera.capture(read_mode="image", exposure_ms=10**400, gain="low", frames=1)
+
+    assert raw.calls == []
+
+
+def test_adapter_rejects_float32_overflow_exposure():
+    raw = FakeDFieldRaw()
+    camera = DFieldCamera(raw)
+
+    with pytest.raises(ConfigError, match="exposure"):
+        camera.capture(read_mode="image", exposure_ms=1e39, gain="low", frames=1)
+
+    assert raw.calls == []
+
+
+def test_adapter_rejects_float32_underflow_exposure():
+    raw = FakeDFieldRaw()
+    camera = DFieldCamera(raw)
+
+    with pytest.raises(ConfigError, match="exposure"):
+        camera.capture(read_mode="image", exposure_ms=1e-46, gain="low", frames=1)
 
     assert raw.calls == []
 

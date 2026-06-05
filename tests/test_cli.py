@@ -127,6 +127,49 @@ def test_devices_real_requires_config(capsys):
     assert "--config" in capsys.readouterr().out
 
 
+def test_devices_config_missing_stage_returns_error(tmp_path: Path, capsys):
+    devices = tmp_path / "devices.yaml"
+    devices.write_text("runtime: {mode: dry_run, log_level: info}\n", encoding="utf-8")
+
+    exit_code = main(["stage", "identify", "--config", str(devices), "--dry-run"])
+
+    assert exit_code == 2
+    assert "error:" in capsys.readouterr().out
+
+
+def test_devices_config_invalid_soft_limit_returns_error(tmp_path: Path, capsys):
+    devices = tmp_path / "devices.yaml"
+    write_devices_config(devices)
+    devices.write_text(devices.read_text(encoding="utf-8").replace("x: [-5000, 5000]", "x: [-5000]"), encoding="utf-8")
+
+    exit_code = main(["stage", "move", "--config", str(devices), "--axis", "x", "--um", "10", "--speed", "8", "--dry-run"])
+
+    assert exit_code == 2
+    assert "error:" in capsys.readouterr().out
+
+
+def test_workflow_config_missing_nested_field_returns_error(tmp_path: Path, capsys):
+    config = tmp_path / "single_point.yaml"
+    write_workflow_config(config, tmp_path / "out")
+    config.write_text(config.read_text(encoding="utf-8").replace("sample: {id: sample-001, operator: lab}", "sample: {id: sample-001}"), encoding="utf-8")
+
+    exit_code = main(["workflow", "single", "--config", str(config), "--dry-run"])
+
+    assert exit_code == 2
+    assert "error:" in capsys.readouterr().out
+
+
+def test_workflow_config_invalid_scalar_returns_error(tmp_path: Path, capsys):
+    config = tmp_path / "single_point.yaml"
+    write_workflow_config(config, tmp_path / "out")
+    config.write_text(config.read_text(encoding="utf-8").replace("exposure_ms: 1000", "exposure_ms: abc"), encoding="utf-8")
+
+    exit_code = main(["workflow", "single", "--config", str(config), "--dry-run"])
+
+    assert exit_code == 2
+    assert "error:" in capsys.readouterr().out
+
+
 def test_phase1_hardware_dry_run_commands_exist(tmp_path: Path, capsys):
     devices = tmp_path / "devices.yaml"
     write_devices_config(devices)
@@ -163,12 +206,23 @@ def test_spec_init_dry_run_validates_ports(tmp_path: Path, capsys):
     assert "unsupported Zolix port" in capsys.readouterr().out
 
 
+def test_spec_set_dry_run_rejects_nan_wavelength(tmp_path: Path, capsys):
+    devices = tmp_path / "devices.yaml"
+    write_devices_config(devices)
+
+    exit_code = main(["spec", "set", "--config", str(devices), "--grating", "1", "--wavelength-nm", "nan", "--slit-um", "100", "--dry-run"])
+
+    assert exit_code == 2
+    assert "wavelength_nm" in capsys.readouterr().out
+
+
 @pytest.mark.parametrize(
     ("move_args", "message"),
     [
         (["--axis", "q", "--um", "10", "--speed", "8"], "unsupported stage axis"),
         (["--axis", "x", "--um", "10", "--speed", "12"], "speed"),
         (["--axis", "x", "--um", "1000", "--speed", "8"], "unknown position"),
+        (["--axis", "x", "--um", "nan", "--speed", "8"], "move distance"),
     ],
 )
 def test_stage_move_dry_run_validates_adapter_constraints(tmp_path: Path, capsys, move_args, message):
@@ -205,6 +259,32 @@ def test_camera_capture_dry_run_validates_mode_and_gain(tmp_path: Path, capsys):
 
     assert exit_code == 2
     assert "unsupported DField" in capsys.readouterr().out
+
+
+def test_camera_capture_dry_run_rejects_nan_exposure(tmp_path: Path, capsys):
+    devices = tmp_path / "devices.yaml"
+    write_devices_config(devices)
+
+    exit_code = main(
+        [
+            "camera",
+            "capture",
+            "--config",
+            str(devices),
+            "--mode",
+            "fvb",
+            "--exposure-ms",
+            "nan",
+            "--gain",
+            "low",
+            "--out",
+            str(tmp_path / "capture.csv"),
+            "--dry-run",
+        ]
+    )
+
+    assert exit_code == 2
+    assert "--exposure-ms" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("bin_args", [["--bin-x", "0"], ["--bin-x", "65"], ["--bin-y", "0"], ["--bin-y", "130"]])

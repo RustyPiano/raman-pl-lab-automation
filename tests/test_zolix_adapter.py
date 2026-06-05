@@ -1,3 +1,5 @@
+import math
+
 import pytest
 
 from lab_auto.devices.zolix_spectrometer import ZolixSpectrometer, direct_to_front_bool, front_bool_to_port
@@ -74,8 +76,15 @@ def test_adapter_wraps_false_result_as_device_error():
     ("method", "value", "message"),
     [
         ("set_grating", 0, "grating"),
+        ("set_grating", math.nan, "grating"),
+        ("set_grating", 10**400, "grating"),
         ("move_to_wavelength_nm", -1.0, "wavelength"),
+        ("move_to_wavelength_nm", 10**400, "wavelength"),
+        ("move_to_wavelength_nm", 1e39, "wavelength"),
+        ("move_to_wavelength_nm", 1e-46, "wavelength"),
         ("set_slit_width_um", -5, "slit"),
+        ("set_slit_width_um", math.nan, "slit"),
+        ("set_slit_width_um", 10**400, "slit"),
     ],
 )
 def test_adapter_validates_optics_before_raw_sdk_calls(method, value, message):
@@ -84,6 +93,29 @@ def test_adapter_validates_optics_before_raw_sdk_calls(method, value, message):
 
     with pytest.raises(ConfigError, match=message):
         getattr(spec, method)(value)
+
+    assert raw.calls == []
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"grating": 10**400},
+        {"center_wavelength_nm": 1e39},
+        {"center_wavelength_nm": 1e-46},
+        {"width": 10**400},
+        {"count": 0},
+        {"bin_x": 0},
+    ],
+)
+def test_pixels_to_waves_validates_abi_arguments_before_raw_call(kwargs):
+    raw = FakeZolixRaw()
+    spec = ZolixSpectrometer(raw, device_id=7)
+    args = {"turret": 0, "grating": 1, "center_wavelength_nm": 600.0, "width": 2048, "count": 3, "bin_x": 1}
+    args.update(kwargs)
+
+    with pytest.raises(ConfigError):
+        spec.pixels_to_waves(**args)
 
     assert raw.calls == []
 

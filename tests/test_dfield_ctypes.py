@@ -1,4 +1,5 @@
 import ctypes
+import math
 import pytest
 
 from lab_auto.devices.raw.dfield_ctypes import DFieldRawClient, LoadedLibrary, configure_signatures, has_required_exports, windows_long_array
@@ -136,6 +137,21 @@ def test_raw_capture_validates_detector_bound_roi_before_state_mutation():
     assert lib.set_roi_calls == []
 
 
+@pytest.mark.parametrize("roi", [(0, math.nan, 0, 1), (0, 1.5, 0, 1), (True, 1, 0, 1)])
+def test_raw_capture_rejects_non_integer_roi_before_state_mutation(roi):
+    lib = FakeDFieldLibrary()
+    raw = DFieldRawClient(lib)
+
+    with pytest.raises(ConfigError, match="ROI"):
+        raw.capture(read_mode_code=1, exposure_ms=100, gain_code=1, frames=1, roi=roi)
+
+    assert lib.set_exposure_calls == []
+    assert lib.set_gain_calls == []
+    assert lib.set_read_mode_calls == []
+    assert lib.set_bin_calls == []
+    assert lib.set_roi_calls == []
+
+
 def test_raw_capture_validates_positive_binned_roi_size_before_state_mutation():
     lib = FakeDFieldLibrary()
     raw = DFieldRawClient(lib)
@@ -191,10 +207,17 @@ def test_raw_fvb_capture_returns_no_stale_roi_metadata():
     "kwargs",
     [
         {"exposure_ms": 0},
+        {"exposure_ms": 10**400},
+        {"exposure_ms": 1e39},
+        {"exposure_ms": 1e-46},
         {"gain_code": -1},
         {"gain_code": 2},
+        {"gain_code": 1.0},
         {"read_mode_code": 2},
+        {"read_mode_code": True},
         {"frames": 0},
+        {"exposure_ms": math.nan},
+        {"frames": math.nan},
     ],
 )
 def test_raw_capture_validates_acquisition_before_open_or_state_mutation(kwargs):

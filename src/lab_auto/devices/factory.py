@@ -16,7 +16,7 @@ from lab_auto.devices.raw.zolix_ctypes import (
     has_required_exports as has_required_zolix_exports,
     load_library as load_zolix_library,
 )
-from lab_auto.devices.waynelabs_stage import PositionLedger, WaynelabsStage
+from lab_auto.devices.waynelabs_stage import WAYNELABS_SERIAL_READ_TIMEOUT_S, PositionLedger, WaynelabsStage
 from lab_auto.devices.zolix_spectrometer import ZolixSpectrometer
 from lab_auto.errors import DeviceError
 from lab_auto.workflow.raman import RamanWorkflow
@@ -116,7 +116,7 @@ class DeviceFactory:
             transport = serial.Serial(
                 port=devices_config.stage.port,
                 baudrate=devices_config.stage.baudrate,
-                timeout=2,
+                timeout=WAYNELABS_SERIAL_READ_TIMEOUT_S,
                 write_timeout=2,
             )
         except Exception as exc:

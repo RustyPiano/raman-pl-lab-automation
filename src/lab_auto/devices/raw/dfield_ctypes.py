@@ -1,4 +1,5 @@
 import ctypes
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +31,21 @@ REQUIRED_EXPORTS = (
     "a4_get_flip",
     "a4_set_flip",
 )
+
+
+def _is_integer_code(value: int, allowed: tuple[int, ...]) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value in allowed
+
+
+def _is_positive_finite_number(value: float) -> bool:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        number = float(value)
+    except (OverflowError, TypeError, ValueError):
+        return False
+    cast = ctypes.c_float(number).value
+    return math.isfinite(number) and math.isfinite(cast) and cast > 0
 
 
 @dataclass(frozen=True)
@@ -143,13 +159,13 @@ class DFieldRawClient:
         bin_y: int = 1,
         roi: tuple[int, int, int, int] | None = None,
     ) -> dict:
-        if read_mode_code not in (0, 1):
+        if not _is_integer_code(read_mode_code, (0, 1)):
             raise ConfigError("DField read_mode_code must be 0 or 1")
-        if exposure_ms <= 0:
+        if not _is_positive_finite_number(exposure_ms):
             raise ConfigError("DField exposure_ms must be positive")
-        if gain_code not in (0, 1):
+        if not _is_integer_code(gain_code, (0, 1)):
             raise ConfigError("DField gain_code must be 0 or 1")
-        if frames < 1:
+        if not isinstance(frames, int) or isinstance(frames, bool) or frames < 1:
             raise ConfigError("DField frames must be at least 1")
         if read_mode_code == 0 and roi is not None:
             raise ConfigError("DField ROI is only supported for image read_mode")

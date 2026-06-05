@@ -1,3 +1,5 @@
+import math
+
 import pytest
 
 from lab_auto.devices.raw.waynelabs_protocol import (
@@ -56,3 +58,13 @@ def test_parse_completion_accepts_limit_or_home():
 def test_rejects_invalid_speed():
     with pytest.raises(ProtocolError, match="speed"):
         build_move_command(axis="x", steps=1, speed=12, direction="positive")
+
+
+def test_rejects_non_finite_speed():
+    with pytest.raises(ProtocolError, match="speed"):
+        build_move_command(axis="x", steps=1, speed=math.nan, direction="positive")
+
+
+def test_rejects_huge_speed_as_protocol_error():
+    with pytest.raises(ProtocolError, match="speed"):
+        build_move_command(axis="x", steps=1, speed=10**400, direction="positive")
