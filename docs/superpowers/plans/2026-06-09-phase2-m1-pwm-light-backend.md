@@ -94,7 +94,7 @@ Canonical test vector: request `01 03 00 00 00 01` → CRC bytes `84 0A`.
 
 **Files:** Create `src/lab_auto/devices/raw/pwm_modbus.py`, `tests/test_pwm_modbus_protocol.py`.
 
-- [ ] **Step 1: Write raw protocol tests**
+- [x] **Step 1: Write raw protocol tests**
 
 Create `tests/test_pwm_modbus_protocol.py` covering pure framing only (no I/O):
 
@@ -110,7 +110,7 @@ Create `tests/test_pwm_modbus_protocol.py` covering pure framing only (no I/O):
 - Register/channel helpers: `output_state_register(2) == 18`, `duty_register(1) == 12`, `freq_registers(1) == (2, 3)`, and out-of-range channel (`<1` or `>5`) raises `ProtocolError`.
 - Voltage codec: `voltage_to_register(5.0) == 50`, `voltage_to_register(5.1)` raises, `register_to_voltage(50) == 5.0`.
 
-- [ ] **Step 2: Run tests to verify the raw module is missing**
+- [x] **Step 2: Run tests to verify the raw module is missing**
 
 ```bash
 .venv/bin/python -m pytest tests/test_pwm_modbus_protocol.py -q
@@ -118,7 +118,7 @@ Create `tests/test_pwm_modbus_protocol.py` covering pure framing only (no I/O):
 
 Expected: collection/import error or failures (module absent).
 
-- [ ] **Step 3: Implement `raw/pwm_modbus.py`**
+- [x] **Step 3: Implement `raw/pwm_modbus.py`**
 
 Mirror `waynelabs_protocol.py` structure: module-level pure functions + a thin
 `PwmModbusProtocol` class wrapper; reuse the existing `ProtocolError(ValueError)`
@@ -135,7 +135,7 @@ Implement:
 
 No `serial`, no `time`, no global voltage write helper that bypasses the cap.
 
-- [ ] **Step 4: Run raw tests**
+- [x] **Step 4: Run raw tests**
 
 ```bash
 .venv/bin/python -m pytest tests/test_pwm_modbus_protocol.py -q
@@ -143,7 +143,7 @@ No `serial`, no `time`, no global voltage write helper that bypasses the cap.
 
 Expected: all pass.
 
-- [ ] **Step 5: Commit raw protocol**
+- [x] **Step 5: Commit raw protocol**
 
 ```bash
 git add src/lab_auto/devices/raw/pwm_modbus.py tests/test_pwm_modbus_protocol.py
@@ -156,7 +156,7 @@ git commit -m "feat(light): add pwm modbus rtu raw protocol"
 
 **Files:** Modify `src/lab_auto/config.py`; create `src/lab_auto/devices/light_safety.py`; create `tests/test_light_config.py`.
 
-- [ ] **Step 1: Write light-config tests**
+- [x] **Step 1: Write light-config tests**
 
 Create `tests/test_light_config.py`:
 
@@ -165,7 +165,7 @@ Create `tests/test_light_config.py`:
 - Rejections (each raises `ConfigError`): unknown `type`; `station_id == 0`; `max_output_voltage_v > 5.0`; `required_output_voltage_v > max_output_voltage_v`; missing `channels.laser`; channel index outside 1–5; duplicate channel index across led/laser; negative/zero `frequency_hz`; `duty_percent` outside 0–100.
 - `manual_light_control` must be `false` when `type == pwm_modbus` (auto-mode backends cannot also claim manual control) → `ConfigError` otherwise.
 
-- [ ] **Step 2: Run tests to verify the new fields are missing**
+- [x] **Step 2: Run tests to verify the new fields are missing**
 
 ```bash
 .venv/bin/python -m pytest tests/test_light_config.py -q
@@ -173,7 +173,7 @@ Create `tests/test_light_config.py`:
 
 Expected: failures (fields/validation absent).
 
-- [ ] **Step 3: Implement config extension and `light_safety.py`**
+- [x] **Step 3: Implement config extension and `light_safety.py`**
 
 In `config.py`:
 - Add a frozen `PwmChannel` dataclass: `channel: int`, `frequency_hz: int`, `duty_percent: float`, `default_off_required: bool`.
@@ -185,7 +185,7 @@ Put all cross-field rules in a new pure `src/lab_auto/devices/light_safety.py`
 `ConfigError`. Keep the raw 5.0 V constant defined in `raw/pwm_modbus.py` and import
 it here, so there is a single source of truth.
 
-- [ ] **Step 4: Run light-config tests**
+- [x] **Step 4: Run light-config tests**
 
 ```bash
 .venv/bin/python -m pytest tests/test_light_config.py tests/test_config.py -q
@@ -193,7 +193,7 @@ it here, so there is a single source of truth.
 
 Expected: new tests pass; existing config tests still pass.
 
-- [ ] **Step 5: Commit config extension**
+- [x] **Step 5: Commit config extension**
 
 ```bash
 git add src/lab_auto/config.py src/lab_auto/devices/light_safety.py tests/test_light_config.py
@@ -206,7 +206,7 @@ git commit -m "feat(light): extend LightConfig for pwm modbus backend"
 
 **Files:** Modify `src/lab_auto/devices/light.py`; create `tests/test_pwm_light_adapter.py`.
 
-- [ ] **Step 1: Write adapter safety tests (fake transport)**
+- [x] **Step 1: Write adapter safety tests (fake transport)**
 
 Create `tests/test_pwm_light_adapter.py` with an in-memory `FakeModbusTransport`
 that records written request frames and returns scripted response frames (built with
@@ -223,7 +223,7 @@ that records written request frames and returns scripted response frames (built 
 - **Read-back validity:** a response with bad CRC / wrong station / exception code causes the operation to raise `DeviceError` (delegated to the raw parser).
 - **Dry-run:** constructing with `dry_run=True` performs no transport I/O and returns deterministic planned actions / states.
 
-- [ ] **Step 2: Run adapter tests to verify the class is missing**
+- [x] **Step 2: Run adapter tests to verify the class is missing**
 
 ```bash
 .venv/bin/python -m pytest tests/test_pwm_light_adapter.py -q
@@ -231,7 +231,7 @@ that records written request frames and returns scripted response frames (built 
 
 Expected: failures (class absent).
 
-- [ ] **Step 3: Implement `PwmModbusLight`**
+- [x] **Step 3: Implement `PwmModbusLight`**
 
 Add `PwmModbusLight` to `devices/light.py` next to `ManualLight`. Inject
 `transport` (with `write(bytes)` and a deadline-based `read(n) -> bytes`, mirroring
@@ -246,7 +246,7 @@ Task 3 Step 1. Honor `dry_run`. Add per-operation timeouts as module constants
 strings (`"laser_off"` / `"laser_on"`); `confirm_laser_off()` / `confirm_laser_on()`
 actually drive `laser_off()` / `laser_on()` and set state only after read-back.
 
-- [ ] **Step 4: Run adapter tests**
+- [x] **Step 4: Run adapter tests**
 
 ```bash
 .venv/bin/python -m pytest tests/test_pwm_light_adapter.py -q
@@ -254,7 +254,7 @@ actually drive `laser_off()` / `laser_on()` and set state only after read-back.
 
 Expected: all pass.
 
-- [ ] **Step 5: Commit adapter**
+- [x] **Step 5: Commit adapter**
 
 ```bash
 git add src/lab_auto/devices/light.py tests/test_pwm_light_adapter.py
@@ -267,14 +267,14 @@ git commit -m "feat(light): add read-back-confirmed pwm modbus light adapter"
 
 **Files:** Modify `src/lab_auto/devices/factory.py`; modify `tests/test_hardware_cli.py` (or add a focused factory test).
 
-- [ ] **Step 1: Write factory dispatch test**
+- [x] **Step 1: Write factory dispatch test**
 
 Add a test that `DeviceFactory.create_light`:
 - returns `ManualLight` for `type: manual` with `manual_light_control: true` (unchanged);
 - still raises `DeviceError` for `type: manual` with `manual_light_control: false` (unchanged Phase 1 contract);
 - for `type: pwm_modbus`, opens the configured serial port via an injected/patched transport factory and returns a `PwmModbusLight` (assert type and that the configured `station_id` / `channels` reached the adapter). Patch the serial open so no real port is touched.
 
-- [ ] **Step 2: Run to verify dispatch is missing**
+- [x] **Step 2: Run to verify dispatch is missing**
 
 ```bash
 .venv/bin/python -m pytest tests/test_hardware_cli.py -q
@@ -282,7 +282,7 @@ Add a test that `DeviceFactory.create_light`:
 
 Expected: the new pwm dispatch test fails.
 
-- [ ] **Step 3: Implement dispatch**
+- [x] **Step 3: Implement dispatch**
 
 In `create_light`, branch on `devices_config.light.type`:
 - `manual` → existing behavior.
@@ -293,7 +293,7 @@ Keep the serial import local to the method (matches `create_stage`). Ensure
 `create_single_point_workflow`'s `finally` close path also closes the light when it
 owns a real transport.
 
-- [ ] **Step 4: Run hardware CLI tests**
+- [x] **Step 4: Run hardware CLI tests**
 
 ```bash
 .venv/bin/python -m pytest tests/test_hardware_cli.py tests/test_real_workflow_cli.py -q
@@ -301,7 +301,7 @@ owns a real transport.
 
 Expected: all pass.
 
-- [ ] **Step 5: Commit factory dispatch**
+- [x] **Step 5: Commit factory dispatch**
 
 ```bash
 git add src/lab_auto/devices/factory.py tests/test_hardware_cli.py
@@ -314,19 +314,19 @@ git commit -m "feat(light): dispatch real light backend on light.type"
 
 **Files:** Create `docs/phase2-hardware-acceptance.md`; touch `configs/devices.example.yaml` only if the commented pwm block needs to match the final field names.
 
-- [ ] **Step 1: Create `docs/phase2-hardware-acceptance.md`**
+- [x] **Step 1: Create `docs/phase2-hardware-acceptance.md`**
 
 Real-serial checklist (run on the Windows lab computer only), covering:
 - Preflight: confirm channel mapping (which channel is laser vs LED), COM port, non-zero station id, frequency/duty per channel, wiring safety of the regulated-supply output, laser initially off and manually controllable.
 - Commands: `ramanctl` light status/doctor against `configs/devices.real.yaml` with `type: pwm_modbus`, then a single-point workflow with `--real --yes`.
 - Pass criteria (from spec §6.5 / §12.2 / §12.3): `Reg1` read back as `0x0032`; non-target channels confirmed off before opening any channel; target freq/duty match config; output state read back as `1` after laser-on and `0` after laser-off and on failure; no writes to `Reg23/24/25`; no station-0 frames; LED-on never satisfies the laser precondition; any failure prompts manual laser-off confirmation.
 
-- [ ] **Step 2: Verify example config field names match the implementation**
+- [x] **Step 2: Verify example config field names match the implementation**
 
 Ensure the commented `pwm_modbus` block in `configs/devices.example.yaml` uses the
 exact field names parsed by `load_devices_config`. Keep the default `type: manual`.
 
-- [ ] **Step 3: Full suite + dry-run regression**
+- [x] **Step 3: Full suite + dry-run regression**
 
 ```bash
 .venv/bin/python -m pytest -q
@@ -336,7 +336,7 @@ PYTHONPATH=src .venv/bin/python -m lab_auto workflow single --config configs/sin
 Expected: all tests pass (Phase 1 + new M1 tests); the dry-run workflow still emits
 the full single-point action sequence unchanged (manual light path is the default).
 
-- [ ] **Step 4: Commit acceptance docs**
+- [x] **Step 4: Commit acceptance docs**
 
 ```bash
 git add docs/phase2-hardware-acceptance.md configs/devices.example.yaml
