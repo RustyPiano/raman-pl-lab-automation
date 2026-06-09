@@ -87,6 +87,21 @@ def test_write_single_to_voltage_register_over_cap_rejected():
         build_write_single_request(station=1, address=VOLTAGE_REGISTER, value=51)
 
 
+def test_write_multiple_covering_voltage_register_over_cap_rejected():
+    # a multi-write whose range includes Reg1 must still honor the 5.0 V cap
+    with pytest.raises(ProtocolError):
+        build_write_multiple_request(station=1, address=VOLTAGE_REGISTER, values=[80])
+    with pytest.raises(ProtocolError):
+        build_write_multiple_request(station=1, address=0, values=[0, 80])  # Reg0,Reg1 -> Reg1=80
+
+
+def test_write_to_reserved_reg0_rejected():
+    with pytest.raises(ProtocolError):
+        build_write_single_request(station=1, address=0, value=1)
+    with pytest.raises(ProtocolError):
+        build_write_multiple_request(station=1, address=0, values=[1, 1])
+
+
 # --- register / channel helpers ----------------------------------------
 
 def test_register_helpers():

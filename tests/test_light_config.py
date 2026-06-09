@@ -132,3 +132,16 @@ def test_duty_out_of_range_rejected(tmp_path):
 def test_pwm_with_manual_control_true_rejected(tmp_path):
     with pytest.raises(ConfigError):
         load_devices_config(_write(tmp_path, _pwm_with(manual_light_control=True)))
+
+
+@pytest.mark.parametrize("bad_station", [248, -1])
+def test_station_id_out_of_modbus_range_rejected(tmp_path, bad_station):
+    with pytest.raises(ConfigError):
+        load_devices_config(_write(tmp_path, _pwm_with(station_id=bad_station)))
+
+
+def test_channel_not_default_off_required_rejected(tmp_path):
+    light = copy.deepcopy(PWM_LIGHT)
+    light["channels"]["laser"]["default_off_required"] = False
+    with pytest.raises(ConfigError):
+        load_devices_config(_write(tmp_path, light))

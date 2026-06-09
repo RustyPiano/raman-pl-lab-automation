@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Raman/PL 自动化平台 · 项目概览</title>
+<style>
+  :root{
+    --bg:#0b0f17; --panel:#121826; --panel2:#1a2236; --line:#26304a;
+    --ink:#e8edf7; --muted:#93a0bd; --faint:#5f6d8c;
+    --done:#34d399; --doneb:#0d3b2e;
+    --active:#fbbf24; --activeb:#3d2f08;
+    --todo:#60a5fa; --todob:#10243f;
+    --laser:#f87171; --raw:#a78bfa; --safe:#f472b6;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:radial-gradient(1200px 600px at 70% -10%,#16203a 0,var(--bg) 60%);
+    color:var(--ink);font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    -webkit-font-smoothing:antialiased;padding:40px 24px 80px}
+  .wrap{max-width:1120px;margin:0 auto}
+  header{margin-bottom:28px}
+  .kicker{color:var(--todo);font-weight:700;letter-spacing:.14em;font-size:12px;text-transform:uppercase}
+  h1{margin:6px 0 6px;font-size:30px;letter-spacing:-.02em}
+  .sub{color:var(--muted);font-size:15px}
+  .meta{margin-top:14px;display:flex;flex-wrap:wrap;gap:8px}
+  .chip{background:var(--panel2);border:1px solid var(--line);border-radius:999px;padding:5px 13px;font-size:12.5px;color:var(--muted)}
+  .chip b{color:var(--ink)}
+  .chip.green{border-color:var(--doneb);color:var(--done)}
+  .chip.amber{border-color:var(--activeb);color:var(--active)}
+
+  section{margin-top:34px}
+  .h{display:flex;align-items:baseline;gap:12px;margin-bottom:16px}
+  .h h2{font-size:19px;margin:0;letter-spacing:-.01em}
+  .h .note{color:var(--faint);font-size:13px}
+
+  /* architecture layered stack */
+  .stack{display:grid;gap:10px}
+  .layer{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 16px;
+    display:grid;grid-template-columns:140px 1fr;gap:16px;align-items:center;position:relative;overflow:hidden}
+  .layer::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--accent,var(--line))}
+  .layer .lname{font-weight:700;font-size:14px}
+  .layer .ldesc{color:var(--muted);font-size:13px}
+  .layer .ldesc code{background:#0c1322;border:1px solid var(--line);border-radius:6px;padding:1px 6px;color:var(--ink);font-size:12px}
+  .mods{margin-top:8px;display:flex;flex-wrap:wrap;gap:6px}
+  .mod{background:#0c1322;border:1px solid var(--line);border-radius:7px;padding:3px 9px;font-size:11.5px;color:var(--muted);font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .mod.warn{border-color:var(--safe);color:var(--safe)}
+  .arrow{text-align:center;color:var(--faint);font-size:13px;letter-spacing:.3em;margin:-2px 0}
+
+  .flowbox{margin-top:14px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px}
+  .flow{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+  .step{background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:7px 11px;font-size:12.5px}
+  .step.safe{border-color:var(--safe);color:#fbcfe8}
+  .sep{color:var(--faint)}
+
+  /* roadmap */
+  .road{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:14px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;position:relative}
+  .card .tag{position:absolute;top:14px;right:14px;font-size:11px;font-weight:700;padding:3px 9px;border-radius:999px}
+  .tag.done{background:var(--doneb);color:var(--done)}
+  .tag.active{background:var(--activeb);color:var(--active)}
+  .tag.todo{background:var(--todob);color:var(--todo)}
+  .card h3{margin:0 0 4px;font-size:16px}
+  .card .ph{font-size:11.5px;color:var(--faint);font-weight:700;letter-spacing:.1em;text-transform:uppercase}
+  .card ul{margin:10px 0 0;padding-left:18px;color:var(--muted);font-size:13px}
+  .card ul li{margin:3px 0}
+  .card .dep{margin-top:10px;font-size:12px;color:var(--faint)}
+  .card .dep b{color:var(--muted)}
+
+  /* gate callout */
+  .gate{margin-top:14px;background:linear-gradient(180deg,#2a1208,#1a0e08);border:1px solid #5a2a12;border-radius:14px;padding:16px 18px;display:flex;gap:14px;align-items:flex-start}
+  .gate .ic{font-size:22px;line-height:1}
+  .gate h3{margin:0 0 4px;color:#fdba74;font-size:15px}
+  .gate p{margin:0;color:#f2c8a0;font-size:13.5px}
+
+  /* next steps */
+  .next{counter-reset:s;display:grid;gap:10px}
+  .ns{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px 14px 54px;position:relative}
+  .ns::before{counter-increment:s;content:counter(s);position:absolute;left:16px;top:50%;transform:translateY(-50%);
+    width:26px;height:26px;border-radius:50%;background:var(--todob);border:1px solid var(--todo);color:var(--todo);
+    font-weight:700;font-size:13px;display:grid;place-items:center}
+  .ns b{font-size:14.5px}
+  .ns .d{color:var(--muted);font-size:13px;margin-top:2px}
+  .ns.now{border-color:var(--active)}
+  .ns.now::before{background:var(--activeb);border-color:var(--active);color:var(--active)}
+
+  footer{margin-top:40px;color:var(--faint);font-size:12px;text-align:center;border-top:1px solid var(--line);padding-top:18px}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;justify-content:center;margin-bottom:8px}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .dot{width:9px;height:9px;border-radius:50%}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="kicker">实验室 Raman / PL 自动化平台</div>
+    <h1>项目架构 · 路线图 · 下一步</h1>
+    <div class="sub">封装底层硬件控制，提供可脚本调用的 Python API 与 <code style="font-family:ui-monospace,Menlo,monospace">ramanctl</code> CLI，为后续 AI Agent 全自动化打基础。</div>
+    <div class="meta">
+      <span class="chip green">Phase 1 ✓ <b>代码完成 · 已合并 main</b></span>
+      <span class="chip green"><b>235</b> tests passed</span>
+      <span class="chip amber">真机验收 · <b>已推迟</b></span>
+      <span class="chip">分支 <b>main</b> · 无远程</span>
+      <span class="chip">更新于 <b>2026-06-09</b></span>
+    </div>
+  </header>
+
+  <!-- ARCHITECTURE -->
+  <section>
+    <div class="h"><h2>① 当前架构</h2><span class="note">严格分层：每层只看下一层的干净接口，协议字符串 / native symbol 锁在最底层</span></div>
+    <div class="stack">
+
+      <div class="layer" style="--accent:var(--todo)">
+        <div class="lname">CLI<br><span style="font-weight:400;color:var(--faint);font-size:12px">ramanctl</span></div>
+        <div>
+          <div class="ldesc">无状态命令行：每次调用都是独立进程，不假设连接 / 句柄跨命令保留。</div>
+          <div class="mods"><span class="mod">devices</span><span class="mod">stage</span><span class="mod">spec</span><span class="mod">camera</span><span class="mod">workflow</span></div>
+        </div>
+      </div>
+      <div class="arrow">▲ 调用</div>
+
+      <div class="layer" style="--accent:#22d3ee">
+        <div class="lname">Workflow</div>
+        <div>
+          <div class="ldesc">业务流程编排：单点 Raman/PL 测量；输出 <code>metadata.json</code> / <code>raw.csv</code> / <code>corrected.csv</code> / <code>run.log</code>。</div>
+          <div class="mods"><span class="mod">workflow/raman.py</span><span class="mod">processing/background.py</span><span class="mod">workflow/data.py</span></div>
+        </div>
+      </div>
+      <div class="arrow">▲ 调用</div>
+
+      <div class="layer" style="--accent:var(--done)">
+        <div class="lname">Adapter</div>
+        <div>
+          <div class="ldesc">干净的 typed Python API + 安全状态机；不碰 ctypes / 裸串口指令。</div>
+          <div class="mods"><span class="mod">waynelabs_stage.py</span><span class="mod">zolix_spectrometer.py</span><span class="mod">dfield_camera.py</span><span class="mod">light.py（manual）</span><span class="mod warn">✚ 安全校验</span></div>
+        </div>
+      </div>
+      <div class="arrow">▲ 封装</div>
+
+      <div class="layer" style="--accent:var(--raw)">
+        <div class="lname">Raw</div>
+        <div>
+          <div class="ldesc">唯一允许出现 native symbol、Modbus 帧、DLL 签名、协议字符串的地方。</div>
+          <div class="mods"><span class="mod">raw/waynelabs_protocol.py</span><span class="mod">raw/zolix_ctypes.py</span><span class="mod">raw/dfield_ctypes.py</span></div>
+        </div>
+      </div>
+      <div class="arrow">▲ ctypes / serial</div>
+
+      <div class="layer" style="--accent:var(--faint)">
+        <div class="lname">硬件 / SDK</div>
+        <div>
+          <div class="ldesc">WayneLabs 位移台（串口/Modbus）· Zolix 光谱仪（DLL）· DField-VS-A4 相机（DLL）· PWM 信号发生器（激光/白光）</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="flowbox">
+      <div style="font-size:12.5px;color:var(--faint);margin-bottom:10px;letter-spacing:.05em">单点测量工作流（dry-run 已验证 · 粉色 = 安全关卡）</div>
+      <div class="flow">
+        <span class="step">devices_check</span><span class="sep">→</span>
+        <span class="step">配置光路<br><span style="color:var(--faint);font-size:11px">入/出口·光栅·波长·狭缝</span></span><span class="sep">→</span>
+        <span class="step safe">确认激光 OFF</span><span class="sep">→</span>
+        <span class="step">采背景</span><span class="sep">→</span>
+        <span class="step safe">确认激光 ON</span><span class="sep">→</span>
+        <span class="step">采样品</span><span class="sep">→</span>
+        <span class="step">扣背景</span><span class="sep">→</span>
+        <span class="step">保存输出</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- HARDWARE GATE -->
+  <div class="gate">
+    <div class="ic">⚠️</div>
+    <div>
+      <h3>关键约束：真机验收统一推迟</h3>
+      <p>"235 测试全绿" = 逻辑在 macOS 上经 dry-run / simulated 验证，<b>≠ 已上机验证</b>。厂家 DLL 是 Windows 的，真机命令需在实验室 Windows 64 位机器上跑（见 <code>docs/phase1-hardware-acceptance.md</code>），按计划等所有开发完成后统一执行。</p>
+    </div>
+  </div>
+
+  <!-- ROADMAP -->
+  <section>
+    <div class="h"><h2>② 路线图</h2><span class="note">Phase 1 已交付；Phase 2 六个里程碑，建议先做 M1</span></div>
+    <div class="road">
+
+      <div class="card">
+        <span class="tag done">DONE</span>
+        <div class="ph">Phase 1 · MVP</div>
+        <h3>骨架 + 单点测量</h3>
+        <ul>
+          <li>ramanctl CLI · dry-run / simulated</li>
+          <li>三个硬件适配器 + raw 分层</li>
+          <li>单点 Raman/PL 工作流 + 输出</li>
+          <li>安全校验（激光 / 软限位 / 饱和）</li>
+        </ul>
+        <div class="dep"><b>状态：</b>代码完成 · 已合并 main · 待上机</div>
+      </div>
+
+      <div class="card">
+        <span class="tag active">下一个</span>
+        <div class="ph">Phase 2 · M1</div>
+        <h3>真实 PWM 光源后端</h3>
+        <ul>
+          <li>Modbus RTU（CRC · 0x03/0x06/0x10）</li>
+          <li>5.0V 硬上限 · 通道映射校验</li>
+          <li>写后读回 Reg17–21 确认</li>
+          <li>laser/led 独立状态 · 异常关断</li>
+        </ul>
+        <div class="dep"><b>风险：</b>最高（解锁全自动开关激光）</div>
+      </div>
+
+      <div class="card">
+        <span class="tag todo">TODO</span>
+        <div class="ph">Phase 2 · M2</div>
+        <h3>Mapping 区域扫描</h3>
+        <ul>
+          <li>网格扫描工作流 + CLI</li>
+          <li>硬前置：X/Y 轴 homed / user_zeroed</li>
+          <li>可中断 · 可恢复 · 可审计</li>
+        </ul>
+        <div class="dep"><b>依赖：</b>stage 安全状态机（已有）</div>
+      </div>
+
+      <div class="card">
+        <span class="tag todo">TODO</span>
+        <div class="ph">Phase 2 · M3</div>
+        <h3>采集后处理增强</h3>
+        <ul>
+          <li>峰检测 · 基线校正</li>
+          <li>自动曝光 · 批量调度</li>
+          <li>纯数据处理 · 离线可验收</li>
+        </ul>
+        <div class="dep"><b>依赖：</b>不涉真机安全</div>
+      </div>
+
+      <div class="card">
+        <span class="tag todo">TODO</span>
+        <div class="ph">Phase 2 · M4</div>
+        <h3>daemon / session 模式</h3>
+        <ul>
+          <li>ramanctl shell / daemon</li>
+          <li>跨命令保留连接（供 Agent 长会话）</li>
+          <li>不破坏现有无状态命令</li>
+        </ul>
+        <div class="dep"><b>依赖：</b>M1–M3 适配器稳定</div>
+      </div>
+
+      <div class="card">
+        <span class="tag todo">TODO</span>
+        <div class="ph">Phase 2 · M5</div>
+        <h3>Agent tool schema + 权限</h3>
+        <ul>
+          <li>CLI 能力 → Agent 可调用工具</li>
+          <li>权限分级</li>
+          <li>不得绕过安全层 / 协议字符串</li>
+        </ul>
+        <div class="dep"><b>依赖：</b>M1–M4 暴露稳定能力</div>
+      </div>
+
+      <div class="card">
+        <span class="tag todo">TODO</span>
+        <div class="ph">Phase 2 · M6</div>
+        <h3>厂家 HTTP 光源后端</h3>
+        <ul>
+          <li>M1 的同接口替代后端</li>
+          <li>同样 5.0V 上限 / 读回 / dry-run</li>
+          <li>不透传任意 HTTP 命令</li>
+        </ul>
+        <div class="dep"><b>依赖：</b>厂家 API 上线</div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- NEXT STEPS -->
+  <section>
+    <div class="h"><h2>③ 我的下一步工作</h2><span class="note">本次已完成文档对齐 + 提交 + Phase 2 范围计划</span></div>
+    <div class="next">
+      <div class="ns now">
+        <b>为 M1（PWM 光源后端）写 task-by-task TDD 实现计划</b>
+        <div class="d">类似 Phase 1 那份逐步计划：文件结构、失败测试先行、安全联锁分步落地、dry-run 验收命令。等你点头即可开工。</div>
+      </div>
+      <div class="ns">
+        <b>实现 M1：raw 层 → 适配器 → 配置 → factory 接线</b>
+        <div class="d">Modbus 帧 / CRC / 读回校验全部用可注入 transport 做 simulated，在 macOS 上完整测试，不依赖真机。</div>
+      </div>
+      <div class="ns">
+        <b>同步收集光源待确认信息（不阻塞开发）</b>
+        <div class="d">向老师/厂家确认：白光/激光通道映射、COM 口、站号、频率/占空比、接线安全、激光联锁可读性 —— 用于后续真机验收。</div>
+      </div>
+      <div class="ns">
+        <b>M1 完成后决定 M2 / M3 先后</b>
+        <div class="d">近期要做面扫描 → 优先 M2；先要数据质量 → 优先 M3。</div>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <div class="legend">
+      <span><span class="dot" style="background:var(--done)"></span>已完成</span>
+      <span><span class="dot" style="background:var(--active)"></span>进行中 / 下一个</span>
+      <span><span class="dot" style="background:var(--todo)"></span>待办</span>
+      <span><span class="dot" style="background:var(--safe)"></span>安全关卡</span>
+    </div>
+    详细 Markdown（供 Agent 阅读）：docs/superpowers/specs/2026-06-04-…design.md ·
+    plans/2026-06-04-…phase1-mvp.md · plans/2026-06-09-…phase2-scope.md · docs/phase1-hardware-acceptance.md
+  </footer>
+
+</div>
+</body>
+</html>

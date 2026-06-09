@@ -202,6 +202,25 @@ def test_laser_off_confirms_all_channels_off():
     assert slave.registers[mb.output_state_register(LASER.channel)] == 0
 
 
+def test_laser_off_with_build_side_error_enters_manual_wait():
+    # defense in depth: even a frame-builder error (e.g. bad station) on the off
+    # path must surface as DeviceError and force manual confirmation, not leak.
+    bad_config = LightConfig(
+        type="pwm_modbus",
+        manual_light_control=False,
+        port="COM7",
+        station_id=0,  # build_read/write_request will raise ProtocolError
+        baudrate=9600,
+        max_output_voltage_v=5.0,
+        required_output_voltage_v=5.0,
+        channels={"laser": LASER},
+    )
+    light = PwmModbusLight(bad_config, transport=FakeModbusSlave(registers={}), dry_run=False)
+    with pytest.raises(DeviceError):
+        light.laser_off()
+    assert light.laser_state == "manual_wait"
+
+
 def test_laser_off_readback_failure_requires_manual():
     slave = FakeModbusSlave(
         registers={**_healthy_registers(), mb.output_state_register(LASER.channel): 1},

@@ -199,7 +199,10 @@ class PwmModbusLight:
         return failures
 
     def _read(self, address: int, count: int) -> list[int]:
-        request = build_read_request(station=self.station, address=address, count=count)
+        try:
+            request = build_read_request(station=self.station, address=address, count=count)
+        except ProtocolError as exc:
+            raise DeviceError(f"PWM modbus read request invalid: {exc}") from exc
         frame = self._exchange(request, expected_len=expected_read_response_len(count))
         try:
             return parse_read_response(frame, station=self.station, function=READ, count=count)
@@ -207,7 +210,10 @@ class PwmModbusLight:
             raise DeviceError(f"PWM modbus read response invalid: {exc}") from exc
 
     def _write_single(self, address: int, value: int) -> None:
-        request = build_write_single_request(station=self.station, address=address, value=value)
+        try:
+            request = build_write_single_request(station=self.station, address=address, value=value)
+        except ProtocolError as exc:
+            raise DeviceError(f"PWM modbus write request invalid: {exc}") from exc
         frame = self._exchange(request, expected_len=8)
         try:
             parse_write_ack(frame, station=self.station, function=WRITE_SINGLE, address=address, value=value)

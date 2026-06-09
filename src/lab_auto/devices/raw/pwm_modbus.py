@@ -28,7 +28,7 @@ WRITE_MULTIPLE = 0x10
 
 VOLTAGE_REGISTER = 1
 MAX_VOLTAGE_DECIVOLT = 50  # 5.0 V == 0x0032
-FORBIDDEN_REGISTERS = frozenset({23, 24, 25})
+FORBIDDEN_REGISTERS = frozenset({0, 23, 24, 25})  # Reg0 reserved/read-only; 23-25 protected
 EXCEPTION_RESPONSE_LEN = 5
 
 _MIN_CHANNEL = 1
@@ -152,8 +152,11 @@ def build_write_multiple_request(*, station: int, address: int, values: list[int
         raise ProtocolError("write-multiple requires at least one value")
     count = len(values)
     for offset in range(count):
-        if (address + offset) in FORBIDDEN_REGISTERS:
-            raise ProtocolError(f"register {address + offset} is forbidden to write")
+        target = address + offset
+        if target in FORBIDDEN_REGISTERS:
+            raise ProtocolError(f"register {target} is forbidden to write")
+        if target == VOLTAGE_REGISTER and values[offset] > MAX_VOLTAGE_DECIVOLT:
+            raise ProtocolError("voltage register write exceeds the 5.0 V hard cap")
     data = bytearray()
     for value in values:
         _validate_word(value, field="value")
