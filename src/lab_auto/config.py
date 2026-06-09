@@ -41,9 +41,23 @@ class CameraConfig:
 
 
 @dataclass(frozen=True)
+class PwmChannel:
+    channel: int
+    frequency_hz: int
+    duty_percent: float
+    default_off_required: bool
+
+
+@dataclass(frozen=True)
 class LightConfig:
     type: str
     manual_light_control: bool
+    port: str | None = None
+    station_id: int | None = None
+    baudrate: int | None = None
+    max_output_voltage_v: float | None = None
+    required_output_voltage_v: float | None = None
+    channels: dict[str, PwmChannel] | None = None
 
 
 @dataclass(frozen=True)
@@ -170,6 +184,44 @@ def _soft_limits_um(value: Any) -> dict[str, list[float]]:
     return limits
 
 
+def _parse_pwm_channel(name: str, value: Any) -> PwmChannel:
+    if not isinstance(value, dict):
+        raise ConfigError(f"light.channels.{name} must be a mapping")
+    return PwmChannel(
+        channel=_finite_int(value["channel"], field=f"channels.{name}.channel"),
+        frequency_hz=_finite_int(value["frequency_hz"], field=f"channels.{name}.frequency_hz"),
+        duty_percent=_finite_float(value["duty_percent"], field=f"channels.{name}.duty_percent"),
+        default_off_required=_as_bool(value.get("default_off_required", True), field=f"channels.{name}.default_off_required"),
+    )
+
+
+def _parse_light(light: dict[str, Any]) -> LightConfig:
+    light_type = str(light["type"])
+    manual_control = _as_bool(light["manual_light_control"], field="manual_light_control")
+    if light_type == "manual":
+        return LightConfig(type=light_type, manual_light_control=manual_control)
+    if light_type == "pwm_modbus":
+        from lab_auto.devices.light_safety import validate_pwm_light_config
+
+        channels_raw = light.get("channels")
+        if not isinstance(channels_raw, dict):
+            raise ConfigError("pwm_modbus light requires a 'channels' mapping")
+        channels = {name: _parse_pwm_channel(name, value) for name, value in channels_raw.items()}
+        config = LightConfig(
+            type=light_type,
+            manual_light_control=manual_control,
+            port=str(light["port"]),
+            station_id=_finite_int(light["station_id"], field="station_id"),
+            baudrate=_finite_int(light.get("baudrate", 9600), field="baudrate"),
+            max_output_voltage_v=_finite_float(light["max_output_voltage_v"], field="max_output_voltage_v"),
+            required_output_voltage_v=_finite_float(light["required_output_voltage_v"], field="required_output_voltage_v"),
+            channels=channels,
+        )
+        validate_pwm_light_config(config)
+        return config
+    raise ConfigError(f"unsupported light type: {light_type}")
+
+
 def load_devices_config(path: str | Path) -> DevicesConfig:
     config_path = Path(path)
     data = _read_yaml(config_path)
@@ -200,10 +252,7 @@ def load_devices_config(path: str | Path) -> DevicesConfig:
                 usb_mode=_as_bool(spectrometer.get("usb_mode", True), field="usb_mode"),
             ),
             camera=CameraConfig(type=str(camera["type"]), dll_path=Path(camera["dll_path"])),
-            light=LightConfig(
-                type=str(light["type"]),
-                manual_light_control=_as_bool(light["manual_light_control"], field="manual_light_control"),
-            ),
+            light=_parse_light(light),
         )
     except KeyError as exc:
         raise ConfigError(f"missing required devices configuration field: {exc.args[0]} in {config_path}") from exc
