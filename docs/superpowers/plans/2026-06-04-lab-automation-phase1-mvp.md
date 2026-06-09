@@ -1,5 +1,14 @@
 # Lab Automation Phase 1 MVP Implementation Plan
 
+> **Status (2026-06-09): Code-complete, pending on-hardware acceptance.**
+> All implementation/test/commit steps below are done and merged to `main`
+> (commits `36518da`, `caa3429`); the full suite passes (235 tests) and the
+> dry-run workflow emits the complete action sequence. The only remaining
+> Phase 1 gate is the real-hardware run in
+> [`docs/phase1-hardware-acceptance.md`](../../phase1-hardware-acceptance.md),
+> which must be executed on the Windows 64-bit lab computer and is
+> intentionally deferred until all development work is finished.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build the Phase 1 laboratory automation MVP: stateless CLI commands, dry-run/simulated execution, WayneLabs stage protocol, Zolix and DField SDK adapters, and a single-point Raman/PL workflow.
@@ -97,7 +106,7 @@ Responsibilities:
 - Create: `src/lab_auto/config.py`
 - Create: `tests/test_config.py`
 
-- [ ] **Step 1: Write config tests**
+- [x] **Step 1: Write config tests**
 
 Create `tests/test_config.py`:
 
@@ -231,7 +240,7 @@ def test_runtime_override_flags_are_mutually_exclusive():
         resolve_runtime_mode(RuntimeMode.DRY_RUN, cli_real=True, cli_dry_run=True)
 ```
 
-- [ ] **Step 2: Run tests to verify scaffold is missing**
+- [x] **Step 2: Run tests to verify scaffold is missing**
 
 Run:
 
@@ -241,7 +250,7 @@ pytest tests/test_config.py -v
 
 Expected: FAIL with `ModuleNotFoundError: No module named 'lab_auto'`.
 
-- [ ] **Step 3: Create package metadata**
+- [x] **Step 3: Create package metadata**
 
 Create `pyproject.toml`:
 
@@ -272,7 +281,7 @@ ramanctl = "lab_auto.cli:main"
 where = ["src"]
 ```
 
-- [ ] **Step 4: Create runtime and errors modules**
+- [x] **Step 4: Create runtime and errors modules**
 
 Create `src/lab_auto/errors.py`:
 
@@ -338,7 +347,7 @@ def resolve_runtime_mode(
     return parse_runtime_mode(configured)
 ```
 
-- [ ] **Step 5: Create config dataclasses and YAML loader**
+- [x] **Step 5: Create config dataclasses and YAML loader**
 
 Create `src/lab_auto/config.py` with these public dataclasses:
 
@@ -506,7 +515,7 @@ def load_workflow_and_devices(
     return workflow, load_devices_config(devices_path)
 ```
 
-- [ ] **Step 6: Add package entry files and example configs**
+- [x] **Step 6: Add package entry files and example configs**
 
 Create `src/lab_auto/__init__.py`:
 
@@ -591,7 +600,7 @@ output:
   formats: [csv, json]
 ```
 
-- [ ] **Step 7: Run config tests**
+- [x] **Step 7: Run config tests**
 
 Run:
 
@@ -602,7 +611,7 @@ pytest tests/test_config.py -v
 
 Expected: all 5 tests PASS.
 
-- [ ] **Step 8: Commit scaffold**
+- [x] **Step 8: Commit scaffold**
 
 ```bash
 git add pyproject.toml configs src tests/test_config.py
@@ -618,7 +627,7 @@ git commit -m "chore: scaffold phase1 automation package"
 - Create: `src/lab_auto/processing/background.py`
 - Create: `tests/test_background.py`
 
-- [ ] **Step 1: Write background subtraction tests**
+- [x] **Step 1: Write background subtraction tests**
 
 Create `tests/test_background.py`:
 
@@ -693,7 +702,7 @@ def test_subtract_background_rejects_axis_metadata_mismatch():
         subtract_background(raw, bg)
 ```
 
-- [ ] **Step 2: Run tests to verify missing modules**
+- [x] **Step 2: Run tests to verify missing modules**
 
 Run:
 
@@ -703,7 +712,7 @@ pytest tests/test_background.py -v
 
 Expected: FAIL with `ModuleNotFoundError` for `lab_auto.processing.background`.
 
-- [ ] **Step 3: Implement platform-independent data models**
+- [x] **Step 3: Implement platform-independent data models**
 
 Create `src/lab_auto/workflow/data.py`:
 
@@ -755,7 +764,7 @@ class SpectrumData:
         )
 ```
 
-- [ ] **Step 4: Implement background subtraction**
+- [x] **Step 4: Implement background subtraction**
 
 Create `src/lab_auto/processing/__init__.py`:
 
@@ -817,7 +826,7 @@ def subtract_background(
     return raw.with_background(background.intensity_raw, corrected, background.saturated)
 ```
 
-- [ ] **Step 5: Run background tests**
+- [x] **Step 5: Run background tests**
 
 Run:
 
@@ -827,7 +836,7 @@ pytest tests/test_background.py -v
 
 Expected: all 3 tests PASS.
 
-- [ ] **Step 6: Commit data models**
+- [x] **Step 6: Commit data models**
 
 ```bash
 git add src/lab_auto/workflow src/lab_auto/processing tests/test_background.py
@@ -842,7 +851,7 @@ git commit -m "feat: add spectrum data model and background subtraction"
 - Create: `src/lab_auto/devices/raw/waynelabs_protocol.py`
 - Create: `tests/test_waynelabs_protocol.py`
 
-- [ ] **Step 1: Write protocol tests**
+- [x] **Step 1: Write protocol tests**
 
 Create `tests/test_waynelabs_protocol.py`:
 
@@ -889,7 +898,7 @@ def test_rejects_invalid_speed():
         build_move_command(axis="x", steps=1, speed=12, direction="positive")
 ```
 
-- [ ] **Step 2: Run tests to verify missing raw module**
+- [x] **Step 2: Run tests to verify missing raw module**
 
 Run:
 
@@ -899,7 +908,7 @@ pytest tests/test_waynelabs_protocol.py -v
 
 Expected: FAIL with `ModuleNotFoundError` for `lab_auto.devices.raw.waynelabs_protocol`.
 
-- [ ] **Step 3: Implement raw protocol**
+- [x] **Step 3: Implement raw protocol**
 
 Create `src/lab_auto/devices/raw/__init__.py`:
 
@@ -997,7 +1006,7 @@ class WaynelabsRawProtocol:
         return parse_completion(response)
 ```
 
-- [ ] **Step 4: Run protocol tests**
+- [x] **Step 4: Run protocol tests**
 
 Run:
 
@@ -1007,7 +1016,7 @@ pytest tests/test_waynelabs_protocol.py -v
 
 Expected: all 7 tests PASS.
 
-- [ ] **Step 5: Commit raw protocol**
+- [x] **Step 5: Commit raw protocol**
 
 ```bash
 git add src/lab_auto/devices/raw tests/test_waynelabs_protocol.py
@@ -1023,7 +1032,7 @@ git commit -m "feat: add waynelabs raw protocol"
 - Create: `src/lab_auto/devices/waynelabs_stage.py`
 - Create: `tests/test_stage_safety.py`
 
-- [ ] **Step 1: Write safety tests**
+- [x] **Step 1: Write safety tests**
 
 Create `tests/test_stage_safety.py`:
 
@@ -1109,7 +1118,7 @@ class FakeStageProtocol:
         return "encoded-home"
 ```
 
-- [ ] **Step 2: Run safety tests to verify adapter missing**
+- [x] **Step 2: Run safety tests to verify adapter missing**
 
 Run:
 
@@ -1119,7 +1128,7 @@ pytest tests/test_stage_safety.py -v
 
 Expected: FAIL with `ModuleNotFoundError` for `lab_auto.devices.waynelabs_stage`.
 
-- [ ] **Step 3: Implement stage state and dry-run adapter**
+- [x] **Step 3: Implement stage state and dry-run adapter**
 
 Create `src/lab_auto/devices/__init__.py`:
 
@@ -1228,7 +1237,7 @@ class WaynelabsStage:
             self.transport.close()
 ```
 
-- [ ] **Step 4: Run safety tests**
+- [x] **Step 4: Run safety tests**
 
 Run:
 
@@ -1238,7 +1247,7 @@ pytest tests/test_stage_safety.py -v
 
 Expected: all 5 tests PASS.
 
-- [ ] **Step 5: Commit stage adapter**
+- [x] **Step 5: Commit stage adapter**
 
 ```bash
 git add src/lab_auto/devices tests/test_stage_safety.py
@@ -1255,7 +1264,7 @@ git commit -m "feat: add waynelabs stage safety adapter"
 - Create: `tests/test_zolix_ctypes.py`
 - Create: `tests/test_zolix_adapter.py`
 
-- [ ] **Step 1: Write raw signature tests**
+- [x] **Step 1: Write raw signature tests**
 
 Create `tests/test_zolix_ctypes.py`:
 
@@ -1327,7 +1336,7 @@ def test_loaded_library_retains_dll_directory_handle():
     assert loaded.lib is lib
 ```
 
-- [ ] **Step 2: Write adapter enum tests**
+- [x] **Step 2: Write adapter enum tests**
 
 Create `tests/test_zolix_adapter.py`:
 
@@ -1430,7 +1439,7 @@ class FakeZolixRaw:
         self.calls.append(("close", device_id))
 ```
 
-- [ ] **Step 3: Run Zolix tests to verify modules missing**
+- [x] **Step 3: Run Zolix tests to verify modules missing**
 
 Run:
 
@@ -1440,7 +1449,7 @@ pytest tests/test_zolix_ctypes.py tests/test_zolix_adapter.py -v
 
 Expected: FAIL with missing Zolix modules.
 
-- [ ] **Step 4: Implement raw signature configuration**
+- [x] **Step 4: Implement raw signature configuration**
 
 Create `src/lab_auto/devices/raw/zolix_ctypes.py`:
 
@@ -1563,7 +1572,7 @@ class ZolixRawClient:
         self.lib.spec_close(device_id)
 ```
 
-- [ ] **Step 5: Implement clean adapter helpers**
+- [x] **Step 5: Implement clean adapter helpers**
 
 Create `src/lab_auto/devices/zolix_spectrometer.py`:
 
@@ -1640,7 +1649,7 @@ class ZolixSpectrometer:
         self.raw.close(self.device_id)
 ```
 
-- [ ] **Step 6: Run Zolix tests**
+- [x] **Step 6: Run Zolix tests**
 
 Run:
 
@@ -1650,7 +1659,7 @@ pytest tests/test_zolix_ctypes.py tests/test_zolix_adapter.py -v
 
 Expected: all 11 tests PASS.
 
-- [ ] **Step 7: Commit Zolix boundary**
+- [x] **Step 7: Commit Zolix boundary**
 
 ```bash
 git add src/lab_auto/devices/raw/zolix_ctypes.py src/lab_auto/devices/zolix_spectrometer.py tests/test_zolix_ctypes.py tests/test_zolix_adapter.py
@@ -1667,7 +1676,7 @@ git commit -m "feat: add zolix raw binding boundary"
 - Create: `tests/test_dfield_ctypes.py`
 - Create: `tests/test_dfield_camera.py`
 
-- [ ] **Step 1: Write DField raw signature tests**
+- [x] **Step 1: Write DField raw signature tests**
 
 Create `tests/test_dfield_ctypes.py`:
 
@@ -1772,7 +1781,7 @@ class FakeDFieldLibrary:
         return None
 ```
 
-- [ ] **Step 2: Write DField adapter tests**
+- [x] **Step 2: Write DField adapter tests**
 
 Create `tests/test_dfield_camera.py`:
 
@@ -1868,7 +1877,7 @@ class FakeDFieldRaw:
         self.closed = True
 ```
 
-- [ ] **Step 3: Run DField tests to verify modules missing**
+- [x] **Step 3: Run DField tests to verify modules missing**
 
 Run:
 
@@ -1878,7 +1887,7 @@ pytest tests/test_dfield_ctypes.py tests/test_dfield_camera.py -v
 
 Expected: FAIL with missing DField modules.
 
-- [ ] **Step 4: Implement DField raw binding**
+- [x] **Step 4: Implement DField raw binding**
 
 Create `src/lab_auto/devices/raw/dfield_ctypes.py`:
 
@@ -2025,7 +2034,7 @@ class DFieldRawClient:
             self._open = False
 ```
 
-- [ ] **Step 5: Implement DField adapter mappings**
+- [x] **Step 5: Implement DField adapter mappings**
 
 Create `src/lab_auto/devices/dfield_camera.py`:
 
@@ -2100,7 +2109,7 @@ class DFieldCamera:
         self.raw.close()
 ```
 
-- [ ] **Step 6: Run DField tests**
+- [x] **Step 6: Run DField tests**
 
 Run:
 
@@ -2110,7 +2119,7 @@ pytest tests/test_dfield_ctypes.py tests/test_dfield_camera.py -v
 
 Expected: all 9 tests PASS.
 
-- [ ] **Step 7: Commit DField boundary**
+- [x] **Step 7: Commit DField boundary**
 
 ```bash
 git add src/lab_auto/devices/raw/dfield_ctypes.py src/lab_auto/devices/dfield_camera.py tests/test_dfield_ctypes.py tests/test_dfield_camera.py
@@ -2126,7 +2135,7 @@ git commit -m "feat: add dfield raw binding boundary"
 - Create: `src/lab_auto/devices/simulated.py`
 - Create: `tests/test_workflow_dry_run.py`
 
-- [ ] **Step 1: Write simulated device tests**
+- [x] **Step 1: Write simulated device tests**
 
 Create the first tests in `tests/test_workflow_dry_run.py`:
 
@@ -2160,7 +2169,7 @@ def test_simulated_spectrometer_pixel_to_wavelength():
     assert waves == [599.99, 600.0, 600.01]
 ```
 
-- [ ] **Step 2: Run simulated tests to verify missing modules**
+- [x] **Step 2: Run simulated tests to verify missing modules**
 
 Run:
 
@@ -2170,7 +2179,7 @@ pytest tests/test_workflow_dry_run.py -v
 
 Expected: FAIL with missing `lab_auto.devices.light`.
 
-- [ ] **Step 3: Implement manual light and simulated devices**
+- [x] **Step 3: Implement manual light and simulated devices**
 
 Create `src/lab_auto/devices/light.py`:
 
@@ -2239,7 +2248,7 @@ class SimulatedSpectrometer:
         return [round(center_wavelength_nm + (index - middle) * 0.01, 6) for index in range(count)]
 ```
 
-- [ ] **Step 4: Run simulated tests**
+- [x] **Step 4: Run simulated tests**
 
 Run:
 
@@ -2249,7 +2258,7 @@ pytest tests/test_workflow_dry_run.py -v
 
 Expected: all 3 tests PASS.
 
-- [ ] **Step 5: Commit simulated devices**
+- [x] **Step 5: Commit simulated devices**
 
 ```bash
 git add src/lab_auto/devices/light.py src/lab_auto/devices/simulated.py tests/test_workflow_dry_run.py
@@ -2265,7 +2274,7 @@ git commit -m "feat: add simulated devices and manual light"
 - Create: `src/lab_auto/workflow/raman.py`
 - Modify: `tests/test_workflow_dry_run.py`
 
-- [ ] **Step 1: Extend workflow dry-run tests**
+- [x] **Step 1: Extend workflow dry-run tests**
 
 Append to `tests/test_workflow_dry_run.py`:
 
@@ -2419,7 +2428,7 @@ class SaturatedCamera:
         )
 ```
 
-- [ ] **Step 2: Run workflow tests to verify workflow missing**
+- [x] **Step 2: Run workflow tests to verify workflow missing**
 
 Run:
 
@@ -2429,7 +2438,7 @@ pytest tests/test_workflow_dry_run.py -v
 
 Expected: FAIL with missing `lab_auto.workflow.raman`.
 
-- [ ] **Step 3: Implement workflow output writer**
+- [x] **Step 3: Implement workflow output writer**
 
 Create `src/lab_auto/logging.py`:
 
@@ -2659,7 +2668,7 @@ class RamanWorkflow:
                     ])
 ```
 
-- [ ] **Step 4: Run workflow tests**
+- [x] **Step 4: Run workflow tests**
 
 Run:
 
@@ -2669,7 +2678,7 @@ pytest tests/test_workflow_dry_run.py -v
 
 Expected: all workflow tests PASS.
 
-- [ ] **Step 5: Commit workflow**
+- [x] **Step 5: Commit workflow**
 
 ```bash
 git add src/lab_auto/logging.py src/lab_auto/workflow tests/test_workflow_dry_run.py
@@ -2684,7 +2693,7 @@ git commit -m "feat: add single point workflow"
 - Create: `src/lab_auto/cli.py`
 - Create: `tests/test_cli.py`
 
-- [ ] **Step 1: Write CLI tests**
+- [x] **Step 1: Write CLI tests**
 
 Create `tests/test_cli.py`:
 
@@ -2791,7 +2800,7 @@ def test_phase1_hardware_dry_run_commands_exist(tmp_path, capsys):
     assert "camera_capture:mode=fvb:out=" in captured.out
 ```
 
-- [ ] **Step 2: Run CLI tests to verify command missing**
+- [x] **Step 2: Run CLI tests to verify command missing**
 
 Run:
 
@@ -2801,7 +2810,7 @@ pytest tests/test_cli.py -v
 
 Expected: FAIL with missing `lab_auto.cli`.
 
-- [ ] **Step 3: Implement argparse CLI**
+- [x] **Step 3: Implement argparse CLI**
 
 Create `src/lab_auto/cli.py`:
 
@@ -2953,7 +2962,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.error("unsupported command")
 ```
 
-- [ ] **Step 4: Run CLI tests**
+- [x] **Step 4: Run CLI tests**
 
 Run:
 
@@ -2963,7 +2972,7 @@ pytest tests/test_cli.py -v
 
 Expected: all CLI tests PASS.
 
-- [ ] **Step 5: Run Milestone 1 acceptance**
+- [x] **Step 5: Run Milestone 1 acceptance**
 
 Run:
 
@@ -2977,7 +2986,7 @@ Expected:
 - output includes `confirm_laser_off`, `capture_background`, `confirm_laser_on`, and `save_outputs`.
 - tests PASS.
 
-- [ ] **Step 6: Commit CLI**
+- [x] **Step 6: Commit CLI**
 
 ```bash
 git add src/lab_auto/cli.py tests/test_cli.py
@@ -2993,7 +3002,7 @@ git commit -m "feat: add phase1 workflow cli"
 - Modify: `src/lab_auto/cli.py`
 - Create: `tests/test_hardware_cli.py`
 
-- [ ] **Step 1: Write real-mode wiring tests**
+- [x] **Step 1: Write real-mode wiring tests**
 
 Create `tests/test_hardware_cli.py`:
 
@@ -3200,7 +3209,7 @@ class FakeCamera:
         pass
 ```
 
-- [ ] **Step 2: Run real-mode CLI tests to verify factory missing**
+- [x] **Step 2: Run real-mode CLI tests to verify factory missing**
 
 Run:
 
@@ -3210,7 +3219,7 @@ pytest tests/test_hardware_cli.py -v
 
 Expected: FAIL with `TypeError: main() got an unexpected keyword argument 'factory'`.
 
-- [ ] **Step 3: Create real device factory composition**
+- [x] **Step 3: Create real device factory composition**
 
 Create `src/lab_auto/devices/factory.py`:
 
@@ -3285,7 +3294,7 @@ class DeviceFactory:
         return DFieldCamera(DFieldRawClient(loaded))
 ```
 
-- [ ] **Step 4: Modify CLI to accept factory and call adapters in real mode**
+- [x] **Step 4: Modify CLI to accept factory and call adapters in real mode**
 
 Change `src/lab_auto/cli.py`:
 
@@ -3392,7 +3401,7 @@ except (ConfigError, DeviceError) as exc:
     return 2
 ```
 
-- [ ] **Step 5: Run hardware CLI tests**
+- [x] **Step 5: Run hardware CLI tests**
 
 Run:
 
@@ -3402,7 +3411,7 @@ pytest tests/test_hardware_cli.py -v
 
 Expected: all 7 tests PASS.
 
-- [ ] **Step 6: Commit real-mode CLI wiring**
+- [x] **Step 6: Commit real-mode CLI wiring**
 
 ```bash
 git add src/lab_auto/devices/factory.py src/lab_auto/cli.py tests/test_hardware_cli.py
@@ -3419,7 +3428,7 @@ git commit -m "feat: wire real-mode hardware cli factory"
 - Modify: `src/lab_auto/workflow/raman.py`
 - Create: `tests/test_real_workflow_cli.py`
 
-- [ ] **Step 1: Write real workflow CLI wiring test**
+- [x] **Step 1: Write real workflow CLI wiring test**
 
 Create `tests/test_real_workflow_cli.py`:
 
@@ -3504,7 +3513,7 @@ class FakeRealWorkflow:
         self.calls.append(("close",))
 ```
 
-- [ ] **Step 2: Run test to verify real workflow still refused**
+- [x] **Step 2: Run test to verify real workflow still refused**
 
 Run:
 
@@ -3514,7 +3523,7 @@ pytest tests/test_real_workflow_cli.py -v
 
 Expected: FAIL because Task 9 still raises `real workflow execution is wired in Task 11`.
 
-- [ ] **Step 3: Extend DeviceFactory contract**
+- [x] **Step 3: Extend DeviceFactory contract**
 
 Modify `src/lab_auto/devices/factory.py`:
 
@@ -3540,7 +3549,7 @@ class DeviceFactory:
         )
 ```
 
-- [ ] **Step 4: Add `RamanWorkflow.real` constructor**
+- [x] **Step 4: Add `RamanWorkflow.real` constructor**
 
 Modify `src/lab_auto/workflow/raman.py`:
 
@@ -3562,7 +3571,7 @@ def close(self) -> None:
 
 This keeps real workflow composition in the factory, gives workflow a single shutdown contract, and prevents CLI from constructing hardware adapters directly.
 
-- [ ] **Step 5: Modify CLI real workflow branch**
+- [x] **Step 5: Modify CLI real workflow branch**
 
 In `src/lab_auto/cli.py`, replace the Task 9 real workflow rejection:
 
@@ -3578,7 +3587,7 @@ if mode is RuntimeMode.REAL:
 
 Do not fall through to `RamanWorkflow.simulated()` in real mode.
 
-- [ ] **Step 6: Run real workflow CLI test**
+- [x] **Step 6: Run real workflow CLI test**
 
 Run:
 
@@ -3588,7 +3597,7 @@ pytest tests/test_real_workflow_cli.py -v
 
 Expected: the test PASS.
 
-- [ ] **Step 7: Commit real workflow wiring**
+- [x] **Step 7: Commit real workflow wiring**
 
 ```bash
 git add src/lab_auto/devices/factory.py src/lab_auto/cli.py src/lab_auto/workflow/raman.py tests/test_real_workflow_cli.py
@@ -3602,7 +3611,7 @@ git commit -m "feat: wire real single point workflow"
 **Files:**
 - Create: `docs/phase1-hardware-acceptance.md`
 
-- [ ] **Step 1: Create acceptance checklist**
+- [x] **Step 1: Create acceptance checklist**
 
 Create `docs/phase1-hardware-acceptance.md`:
 
@@ -3646,7 +3655,7 @@ ramanctl workflow single --config configs/single_point.yaml --devices-config con
 - Any failure path prompts the user to confirm laser-off state.
 ```
 
-- [ ] **Step 2: Verify markdown has no stale local config tracking**
+- [x] **Step 2: Verify markdown has no stale local config tracking**
 
 Run:
 
@@ -3656,7 +3665,7 @@ git check-ignore -v configs/devices.yaml configs/devices.real.yaml configs/singl
 
 Expected: each path is ignored by `.gitignore`.
 
-- [ ] **Step 3: Commit acceptance docs**
+- [x] **Step 3: Commit acceptance docs**
 
 ```bash
 git add docs/phase1-hardware-acceptance.md

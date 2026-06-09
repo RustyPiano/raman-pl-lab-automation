@@ -17,6 +17,13 @@
 - `DField-VS-A4-SDK-20250619/`
   - DField-VS-A4 CCD/相机探测器 SDK 和 Demo。
 
+## 当前进度（2026-06-09）
+
+- Phase 1 MVP **代码已完成并合并到 `main`**（commit `36518da`、`caa3429`）：`ramanctl` CLI、dry-run/simulated 模式、WayneLabs/Zolix/DField 适配器、单点 Raman/PL 工作流、安全校验。
+- 测试全绿（235 passed），dry-run 工作流可输出完整动作序列。
+- **唯一未完成的 Phase 1 事项是真机验收**（见 `docs/phase1-hardware-acceptance.md`），需在实验室 Windows 64 位机器上执行，按计划推迟到全部开发工作完成后再跑。
+- 下一步：准备进入 Phase 2（Mapping、真实 PWM 光源后端、Agent tool schema、daemon/session）。
+
 ## 开发入口
 
 第一版可执行规格文档：
