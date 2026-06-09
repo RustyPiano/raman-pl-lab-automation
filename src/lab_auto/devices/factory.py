@@ -3,7 +3,8 @@ from pathlib import Path
 
 from lab_auto.config import DevicesConfig, WorkflowConfig
 from lab_auto.devices.dfield_camera import DFieldCamera
-from lab_auto.devices.light import ManualLight
+from lab_auto.devices.light import PWM_MODBUS_READ_TIMEOUT_S, ManualLight, PwmModbusLight
+from lab_auto.devices.light_safety import validate_pwm_light_config
 from lab_auto.devices.raw.dfield_ctypes import (
     DFieldRawClient,
     configure_signatures as configure_dfield_signatures,
@@ -151,9 +152,31 @@ class DeviceFactory:
             raise DeviceError(f"failed to create DField camera: {exc}") from exc
 
     def create_light(self, devices_config: DevicesConfig):
-        if not devices_config.light.manual_light_control:
-            raise DeviceError("Phase 1 real workflow requires manual_light_control=true")
-        return ManualLight(manual=True)
+        light_config = devices_config.light
+        if light_config.type == "manual":
+            if not light_config.manual_light_control:
+                raise DeviceError("Phase 1 real workflow requires manual_light_control=true")
+            return ManualLight(manual=True)
+        if light_config.type == "pwm_modbus":
+            validate_pwm_light_config(light_config)
+            transport = self._open_pwm_transport(light_config)
+            return PwmModbusLight(light_config, transport=transport, dry_run=False)
+        raise DeviceError(f"unsupported light type: {light_config.type}")
+
+    def _open_pwm_transport(self, light_config):
+        try:
+            import serial
+        except ImportError as exc:
+            raise DeviceError("pyserial is required for real PWM light control") from exc
+        try:
+            return serial.Serial(
+                port=light_config.port,
+                baudrate=light_config.baudrate,
+                timeout=PWM_MODBUS_READ_TIMEOUT_S,
+                write_timeout=2,
+            )
+        except Exception as exc:
+            raise DeviceError(f"failed to open PWM light serial port {light_config.port}: {exc}") from exc
 
     def create_single_point_workflow(self, workflow_config: WorkflowConfig, devices_config: DevicesConfig):
         light = self.create_light(devices_config)
@@ -172,7 +195,7 @@ class DeviceFactory:
                 light=light,
             )
         except Exception:
-            for device in (camera, spectrometer, stage):
+            for device in (camera, spectrometer, stage, light):
                 if device is not None:
                     close = getattr(device, "close", None)
                     if close is not None:

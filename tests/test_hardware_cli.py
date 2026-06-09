@@ -447,3 +447,61 @@ class LightSafetyFactory(DeviceFactory):
 class RawErrorFactory(FakeDeviceFactory):
     def create_stage(self, devices_config):
         raise OSError("serial failed")
+
+
+PWM_LIGHT_BLOCK = """light:
+  type: pwm_modbus
+  manual_light_control: false
+  port: COM7
+  station_id: 3
+  baudrate: 9600
+  max_output_voltage_v: 5.0
+  required_output_voltage_v: 5.0
+  channels:
+    led: {channel: 1, frequency_hz: 1000, duty_percent: 5.0, default_off_required: true}
+    laser: {channel: 2, frequency_hz: 1000, duty_percent: 5.0, default_off_required: true}
+"""
+
+
+def write_pwm_devices_config(path: Path):
+    write_devices_config(path)
+    text = path.read_text(encoding="utf-8").replace(
+        "light: {type: manual, manual_light_control: true}\n", PWM_LIGHT_BLOCK
+    )
+    path.write_text(text, encoding="utf-8")
+
+
+def test_create_light_returns_manual_light_for_manual_type(tmp_path: Path):
+    devices = tmp_path / "devices.real.yaml"
+    write_devices_config(devices)
+    from lab_auto.devices.light import ManualLight
+
+    light = DeviceFactory().create_light(load_devices_config(devices))
+    assert isinstance(light, ManualLight)
+
+
+class PwmSerialFactory(DeviceFactory):
+    """Override the serial seam so tests need no real pyserial port."""
+
+    def __init__(self):
+        self.opened = {}
+
+    def _open_pwm_transport(self, light_config):
+        self.opened["port"] = light_config.port
+        self.opened["baudrate"] = light_config.baudrate
+        return object()
+
+
+def test_create_light_dispatches_pwm_modbus_backend(tmp_path: Path):
+    devices = tmp_path / "devices.real.yaml"
+    write_pwm_devices_config(devices)
+    config = load_devices_config(devices)
+    factory = PwmSerialFactory()
+
+    from lab_auto.devices.light import PwmModbusLight
+
+    light = factory.create_light(config)
+    assert isinstance(light, PwmModbusLight)
+    assert light.station == 3
+    assert light.config.channels["laser"].channel == 2
+    assert factory.opened == {"port": "COM7", "baudrate": 9600}
