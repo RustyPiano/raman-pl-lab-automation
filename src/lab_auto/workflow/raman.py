@@ -40,7 +40,7 @@ class RamanWorkflow:
         return workflow
 
     def close(self) -> None:
-        for device in (getattr(self, "stage", None), self.spectrometer, self.camera):
+        for device in (getattr(self, "stage", None), self.spectrometer, self.camera, self.light):
             close = getattr(device, "close", None)
             if close is not None:
                 close()

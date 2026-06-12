@@ -1,13 +1,13 @@
 # Lab Automation Phase 1 MVP Implementation Plan
 
-> **Status (2026-06-09): Code-complete, pending on-hardware acceptance.**
+> **Status (2026-06-13): Code-complete, pending on-hardware acceptance.**
 > All implementation/test/commit steps below are done and merged to `main`
-> (commits `36518da`, `caa3429`); the full suite passes (235 tests) and the
-> dry-run workflow emits the complete action sequence. The only remaining
-> Phase 1 gate is the real-hardware run in
+> (commits `36518da`, `caa3429`). After the Phase 2 M1 PWM backend work, the
+> current full suite passes 296 tests and the dry-run workflow emits the
+> complete action sequence. The only remaining Phase 1 gate is the real-hardware run in
 > [`docs/phase1-hardware-acceptance.md`](../../phase1-hardware-acceptance.md),
 > which must be executed on the Windows 64-bit lab computer and is
-> intentionally deferred until all development work is finished.
+> intentionally deferred until the lab machine is available.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

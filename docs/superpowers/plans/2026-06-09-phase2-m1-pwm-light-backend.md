@@ -2,10 +2,10 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-> **Status (2026-06-09): Not started.** This is the first Phase 2 milestone. It is
-> developed and tested entirely with a simulated in-memory transport on macOS; the
-> real serial run is deferred to the shared on-hardware acceptance pass, exactly
-> like Phase 1.
+> **Status (2026-06-13): Code-complete, pending on-hardware acceptance.** This
+> first Phase 2 milestone was developed and tested entirely with a simulated
+> in-memory transport on macOS; the real serial run remains deferred to the
+> shared on-hardware acceptance pass, exactly like Phase 1.
 
 **Goal:** Add a real PWM light-source backend (`type: pwm_modbus`) that speaks Modbus
 RTU to the multi-channel PWM signal generator, with all safety interlocks from the

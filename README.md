@@ -17,12 +17,13 @@
 - `DField-VS-A4-SDK-20250619/`
   - DField-VS-A4 CCD/相机探测器 SDK 和 Demo。
 
-## 当前进度（2026-06-09）
+## 当前进度（2026-06-13）
 
 - Phase 1 MVP **代码已完成并合并到 `main`**（commit `36518da`、`caa3429`）：`ramanctl` CLI、dry-run/simulated 模式、WayneLabs/Zolix/DField 适配器、单点 Raman/PL 工作流、安全校验。
-- 测试全绿（235 passed），dry-run 工作流可输出完整动作序列。
-- **唯一未完成的 Phase 1 事项是真机验收**（见 `docs/phase1-hardware-acceptance.md`），需在实验室 Windows 64 位机器上执行，按计划推迟到全部开发工作完成后再跑。
-- 下一步：准备进入 Phase 2（Mapping、真实 PWM 光源后端、Agent tool schema、daemon/session）。
+- Phase 2 M1 **真实 PWM 光源后端已完成并合并到 `main`**：Modbus RTU raw 协议、`pwm_modbus` 配置解析、`PwmModbusLight` 读回确认安全序列、real-mode factory dispatch、硬件验收清单。
+- 测试全绿（296 passed），默认 dry-run 单点工作流可输出完整动作序列。
+- **仅剩真机验收未执行**：Phase 1 硬件验收见 `docs/phase1-hardware-acceptance.md`；Phase 2 M1 PWM 光源硬件验收见 `docs/phase2-hardware-acceptance.md`。两者都需在实验室 Windows 64 位机器上执行。
+- 下一步：准备 Phase 2 M2 Mapping 区域扫描工作流 + CLI。
 
 ## 开发入口
 
@@ -39,7 +40,7 @@
 - DField 相机 DLL 封装。
 - 单点 Raman/PL 测量工作流。
 
-Mapping、Agent tool schema、daemon/session 模式和真实光源控制器接入属于 Phase 2。
+真实 PWM 光源控制器接入已作为 Phase 2 M1 完成。Mapping、采集后处理增强、Agent tool schema、daemon/session 模式和厂家 HTTP 光源后端属于后续 Phase 2 里程碑。
 
 ## 仓库约定
 

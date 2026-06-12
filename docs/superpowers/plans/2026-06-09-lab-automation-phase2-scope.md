@@ -1,12 +1,15 @@
 # Lab Automation Phase 2 Scope & Sequencing Plan
 
-> **Status (2026-06-09): Planning. No Phase 2 code written yet.**
-> Phase 1 MVP is code-complete and merged to `main` (`36518da`, `caa3429`);
-> 235 tests pass; the only outstanding Phase 1 gate is the on-hardware
-> acceptance in [`docs/phase1-hardware-acceptance.md`](../../phase1-hardware-acceptance.md),
-> deliberately deferred until all development is finished. This document plans
-> Phase 2: what we build, in what order, under what contracts, and which
-> open questions must be answered before any **real-hardware** action ships.
+> **Status (2026-06-13): Phase 2 M1 code-complete, pending on-hardware acceptance.**
+> Phase 1 MVP is code-complete and merged to `main` (`36518da`, `caa3429`).
+> Phase 2 M1 PWM Modbus light backend is also implemented and merged to `main`;
+> 296 tests pass locally. The only outstanding Phase 1/M1 gates are the
+> on-hardware acceptance runs in
+> [`docs/phase1-hardware-acceptance.md`](../../phase1-hardware-acceptance.md)
+> and [`docs/phase2-hardware-acceptance.md`](../../phase2-hardware-acceptance.md),
+> deliberately deferred until the lab Windows machine is available. This
+> document now tracks the remaining Phase 2 milestones and the open questions
+> that must be answered before any **real-hardware** action ships.
 
 **Source spec:** [`docs/superpowers/specs/2026-06-04-lab-automation-platform-design.md`](../specs/2026-06-04-lab-automation-platform-design.md)
 （光源协议 §6.5；安全状态机 §12.2/§12.3；Phase 2 候选范围 §15；风险/待确认 §16；Agent 约束 §17）
@@ -29,22 +32,22 @@
 
 按"安全风险 + 依赖关系 + 可独立验收"排序。每个里程碑都可在不上真机的情况下完成开发与测试，真机验收统一推迟。
 
-| # | 里程碑 | 依赖 | 真机前置（上机才确认） |
-|---|--------|------|------------------------|
-| **M1** | 真实 PWM 光源后端（Modbus RTU） | 无（扩展现有 light 分层） | 通道映射、COM 口、站号、频率/占空比、接线安全、联锁可读性 |
-| **M2** | Mapping 区域扫描工作流 + CLI | M1 可选；依赖 stage 安全状态机（已存在） | 位移台分辨率/轴方向标定 |
-| **M3** | 采集后处理增强（峰检测、基线校正、自动曝光、批量调度） | M2（批量调度复用 Mapping 网格） | 无（纯数据处理，可离线验收） |
-| **M4** | daemon / session 模式（`ramanctl shell` 或 daemon） | M1–M3 适配器稳定 | 无 |
-| **M5** | Agent tool schema + 权限系统 | M1–M4（暴露稳定能力） | 无 |
-| **M6** | 厂家 HTTP 光源后端（M1 的替代/补充） | M1；厂家 API 上线 | HTTP 端口、命令字符串、状态读回、错误格式 |
+| # | 状态 | 里程碑 | 依赖 | 真机前置（上机才确认） |
+|---|------|--------|------|------------------------|
+| **M1** | 代码完成；待真机验收 | 真实 PWM 光源后端（Modbus RTU） | 无（扩展现有 light 分层） | 通道映射、COM 口、站号、频率/占空比、接线安全、联锁可读性 |
+| **M2** | 下一步计划 | Mapping 区域扫描工作流 + CLI | 依赖 stage 安全状态机（已存在）；可复用 M1 光源后端 | 位移台分辨率/轴方向标定 |
+| **M3** | 未开始 | 采集后处理增强（峰检测、基线校正、自动曝光、批量调度） | M2（批量调度复用 Mapping 网格） | 无（纯数据处理，可离线验收） |
+| **M4** | 未开始 | daemon / session 模式（`ramanctl shell` 或 daemon） | M1–M3 适配器稳定 | 无 |
+| **M5** | 未开始 | Agent tool schema + 权限系统 | M1–M4（暴露稳定能力） | 无 |
+| **M6** | 阻塞于厂家 API | 厂家 HTTP 光源后端（M1 的替代/补充） | M1；厂家 API 上线 | HTTP 端口、命令字符串、状态读回、错误格式 |
 
-**建议先做 M1。** 它风险最高、最能解锁"全自动开关激光"的瓶颈，且与现有 `ManualLight` 分层无缝衔接；M6 是它的同接口替代后端，等厂家 API 上线再做。
+**当前建议先做 M2。** M1 已完成 dry-run/simulated 开发，真实串口验收推迟；M2 能继续推进 Mapping 自动化，并复用现有 stage 安全状态机和 M1 光源接口。M6 仍是同接口替代后端，等厂家 API 上线再做。
 
 ---
 
 ## 3. M1：真实 PWM 光源后端（Modbus RTU）—— 详细契约
 
-这是 Phase 2 安全最关键的一块，spec §6.5 / §12.2 / §12.3 已给出完整协议和联锁要求。下面是落地契约。
+这是 Phase 2 安全最关键的一块，spec §6.5 / §12.2 / §12.3 已给出完整协议和联锁要求。M1 的 dry-run/simulated 开发已完成，下面保留落地契约供审核和真机验收对照。
 
 ### 3.1 文件结构（新增/修改）
 
@@ -149,7 +152,7 @@ light:
 
 ## 5. 开工前必须回答的待确认事项（spec §16）
 
-这些**阻塞真机实现/验收**，但**不阻塞 dry-run/simulated 开发**。M1 开发可立即开始；上机前需老师/厂家确认：
+这些**阻塞真机验收**或后续里程碑实现，但**不阻塞 dry-run/simulated 开发**。M1 上机前需老师/厂家确认，M2 上机前需完成位移台标定：
 
 1. **光源（阻塞 M1 真机）**：白光/激光各接哪个 PWM 通道；实际 COM 口、站号；默认频率/占空比；输出电压是否全通道共享；激光安全联锁能否软件读取；数控电源输出端是否接负载、接线是否确认安全。
 2. **位移台（阻塞 M2 真机）**：实际分辨率（丝杆导程、减速比）、轴方向是否与 PDF 示例一致。
@@ -161,6 +164,6 @@ light:
 
 ## 6. 建议的立即下一步
 
-1. **锁定 M1 为首个开工项**，按本文件 §3 契约写 M1 的 task-by-task TDD 实现计划（类似 Phase 1 的 `phase1-mvp` plan）。
-2. 向老师/厂家收集 §5.1 的光源待确认信息（不阻塞开发，但越早越好，便于后续真机验收）。
-3. M1 开发完成后再决定 M2 与 M3 的先后（若近期要做面扫描，优先 M2；若先要数据质量，优先 M3）。
+1. 写 M2 Mapping 区域扫描的 task-by-task TDD 实现计划。
+2. 向老师/厂家收集 §5.1 的光源信息和 §5.2 的位移台标定信息；这些不阻塞 simulated 开发，但会阻塞真机验收。
+3. M2 完成后再决定 M3 与 M4 的先后（若先要数据质量，优先 M3；若先要 Agent 长会话，优先 M4）。

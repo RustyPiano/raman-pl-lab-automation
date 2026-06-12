@@ -190,6 +190,27 @@ def test_real_single_workflow_confirms_laser_off_after_success(tmp_path: Path):
     assert events == ["off", "capture:off_confirmed", "on", "capture:on_confirmed", "off", "calibration", "calibration"]
 
 
+def test_real_workflow_close_closes_owned_light(tmp_path: Path):
+    stage = ClosableDevice()
+    spectrometer = ClosableDevice()
+    camera = ClosableDevice()
+    light = ClosableDevice()
+    workflow = RamanWorkflow.real(
+        workflow_config(tmp_path),
+        stage=stage,
+        spectrometer=spectrometer,
+        camera=camera,
+        light=light,
+    )
+
+    workflow.close()
+
+    assert stage.closed is True
+    assert spectrometer.closed is True
+    assert camera.closed is True
+    assert light.closed is True
+
+
 def test_single_workflow_confirms_laser_off_on_failure(tmp_path: Path):
     workflow = RamanWorkflow.simulated(workflow_config(tmp_path))
     workflow.spectrometer = NoCalibrationSpectrometer()
@@ -557,3 +578,11 @@ class BinnedCamera:
             raw_frames_count=frames,
             saturation_threshold=65535,
         )
+
+
+class ClosableDevice:
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
