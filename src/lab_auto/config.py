@@ -139,6 +139,22 @@ class TrayLayout:
     order: str
 
 
+@dataclass(frozen=True)
+class ScanPattern:
+    """Per-center measurement pattern: center + parameterized surrounding points.
+
+    Each point's single-point Raman is repeated ``repeats_per_point`` times as a
+    BURN CHECK (compared, flagged), not averaged.
+    """
+
+    repeats_per_point: int
+    burn_metric: str
+    burn_threshold: float
+    surrounding_count: int
+    surrounding_distance_um: float
+    surrounding_angles_deg: list[float]
+
+
 def _read_yaml(path: Path) -> dict[str, Any]:
     if not path.exists():
         raise ConfigError(f"configuration file does not exist: {path}")
