@@ -108,6 +108,24 @@ class WorkflowConfig:
     output: OutputConfig
 
 
+@dataclass(frozen=True)
+class Calibration:
+    """Per-objective affine pixel->stage calibration.
+
+    ``a11..a22`` are the ``A`` matrix (um-per-pixel) mapping an image-shift
+    request ``(image_center - pixel)`` to a relative stage move; the image
+    center is the coordinate origin (= laser spot at capture).
+    """
+
+    objective: str
+    a11: float
+    a12: float
+    a21: float
+    a22: float
+    image_center_px: float
+    image_center_py: float
+
+
 def _read_yaml(path: Path) -> dict[str, Any]:
     if not path.exists():
         raise ConfigError(f"configuration file does not exist: {path}")
