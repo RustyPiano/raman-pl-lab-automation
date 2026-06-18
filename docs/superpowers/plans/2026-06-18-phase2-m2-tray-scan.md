@@ -1,13 +1,13 @@
 # Phase 2 · M2 — Tray → Wafer → Sample Layered Scan Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 ---
 
 ## RESUME / CURRENT STATE (read this first after any context compression)
 
 - **M1 (PWM Modbus light backend) is DONE and merged to `main`** — raw protocol, `LightConfig` extension, `PwmModbusLight` adapter with read-back interlocks, factory dispatch, review fixes. Suite was **295 tests passing** before M2.
-- **M2 = this plan. NOT started yet.** Start at Task 1. All M2 tasks are **pure logic, fully testable on macOS with fake/dry-run** — no real hardware needed. Real calibration data collection, real CCD imaging, and per-objective calibration values are deferred to the shared on-hardware pass (like Phase 1/M1).
+- **M2 (this plan) is DONE and merged to `main`** — all 9 tasks implemented TDD, one commit each. Suite **347 tests passing**. New modules: `vision/mask_centers.py`, `vision/calibration.py`, `scan/tray.py`, `scan/pattern.py`, `processing/burn_check.py`, `workflow/tray_scan.py`; config dataclasses + loader, CLI `ramanctl scan tray`, and factory `create_tray_scan_workflow` wired. Real calibration data collection, real CCD imaging/recognition hook, and per-objective calibration values are deferred to the shared on-hardware pass (`docs/phase2-hardware-acceptance.md` M2 section), like Phase 1/M1.
 - Run tests with: `PYTHONPATH=src .venv/bin/python -m pytest -q`. Dry-run a workflow with `PYTHONPATH=src .venv/bin/python -m lab_auto ...`.
 - The package is NOT pip-installed; always use `PYTHONPATH=src`.
 - Confirmed design decisions and their rationale live in **§ Confirmed Decisions** below and in the scope plan `docs/superpowers/plans/2026-06-09-lab-automation-phase2-scope.md` §4 (M2).
@@ -106,82 +106,82 @@ So:
 
 **Files:** `src/lab_auto/vision/__init__.py`, `src/lab_auto/vision/mask_centers.py`, `tests/test_mask_centers.py`.
 
-- [ ] **Step 1: Write tests.** Cover:
+- [x] **Step 1: Write tests.** Cover:
   - `extract_centers(mask, *, min_area=1)` on a 2D `list[list[int]]` (0=background, nonzero=foreground) returns a list of `SampleCenter(pixel_x, pixel_y, area, label)` where `pixel_x/pixel_y` are the **centroid** (mean column/row, float), one per 4-connected foreground component.
   - A single rectangular blob → one center at its geometric centroid.
   - Two separated blobs → two centers; diagonal-only touching blobs stay separate (4-connectivity).
   - `min_area` filters out tiny blobs (noise).
   - Deterministic ordering (e.g., by `(round(pixel_y), round(pixel_x))`).
   - Empty/all-zero mask → `[]`. Ragged rows → `ConfigError`/`ValueError`.
-- [ ] **Step 2: Run to confirm red.** `PYTHONPATH=src .venv/bin/python -m pytest tests/test_mask_centers.py -q`
-- [ ] **Step 3: Implement.** `SampleCenter` frozen dataclass; `extract_centers` via pure-stdlib 4-connected components (iterative BFS/stack or union-find), centroid = mean of member pixel coords, `area` = pixel count, stable label ids, deterministic sort. No numpy.
-- [ ] **Step 4: Run green.**
-- [ ] **Step 5: Commit** `feat(vision): extract sample centers from recognition mask`.
+- [x] **Step 2: Run to confirm red.** `PYTHONPATH=src .venv/bin/python -m pytest tests/test_mask_centers.py -q`
+- [x] **Step 3: Implement.** `SampleCenter` frozen dataclass; `extract_centers` via pure-stdlib 4-connected components (iterative BFS/stack or union-find), centroid = mean of member pixel coords, `area` = pixel count, stable label ids, deterministic sort. No numpy.
+- [x] **Step 4: Run green.**
+- [x] **Step 5: Commit** `feat(vision): extract sample centers from recognition mask`.
 
 ## Task 2: Pixel→stage affine calibration (pure) + Calibration config
 
 **Files:** `src/lab_auto/vision/calibration.py`, `src/lab_auto/config.py` (add `Calibration`), `tests/test_calibration.py`.
 
-- [ ] **Step 1: Write tests.**
+- [x] **Step 1: Write tests.**
   - `fit_affine(samples)` where `samples=[(stage_delta_um, pixel_delta), ...]`: pick a known `A` (e.g. scale 0.5 um/px + small rotation), synthesize `P_i = A⁻¹ · S_i` for non-colinear `S_i`, assert the fitted `A` recovers it (within tolerance).
   - Fewer than 2 independent samples → `ConfigError`.
   - `pixel_to_stage_delta(calib, pixel)` returns `A @ (image_center - pixel)`; a pixel at the image center → `(0,0)`.
   - 2×2 inverse helper handles a singular matrix → `ConfigError`.
-- [ ] **Step 2: Run red.**
-- [ ] **Step 3: Implement.** Pure 2×2 linear algebra (matmul, inverse, least-squares via normal equations). `Calibration` frozen dataclass: `objective: str`, `a11,a12,a21,a22` (the `A` matrix), `image_center_px`, `image_center_py`. Add parsing to `config.py` (mirror existing helpers).
-- [ ] **Step 4: Run green.**
-- [ ] **Step 5: Commit** `feat(vision): affine pixel-to-stage calibration fit and apply`.
+- [x] **Step 2: Run red.**
+- [x] **Step 3: Implement.** Pure 2×2 linear algebra (matmul, inverse, least-squares via normal equations). `Calibration` frozen dataclass: `objective: str`, `a11,a12,a21,a22` (the `A` matrix), `image_center_px`, `image_center_py`. Add parsing to `config.py` (mirror existing helpers).
+- [x] **Step 4: Run green.**
+- [x] **Step 5: Commit** `feat(vision): affine pixel-to-stage calibration fit and apply`.
 
 ## Task 3: Tray geometry (pure) + TrayLayout config
 
 **Files:** `src/lab_auto/scan/__init__.py`, `src/lab_auto/scan/tray.py`, `src/lab_auto/config.py` (add `TrayLayout`), `tests/test_tray_geometry.py`.
 
-- [ ] **Step 1: Write tests.**
+- [x] **Step 1: Write tests.**
   - `wafer_centers(layout)` returns wafer-center **home-relative stage coords** `(x_um, y_um, row, col, index)` for an `rows×cols` grid: `x = first_cell_offset.x + col*pitch.x`, `y = first_cell_offset.y + row*pitch.y`.
   - `order="row_major"` vs `"serpentine"` produce the expected visiting sequence (serpentine reverses column direction on alternate rows).
   - Validation: positive rows/cols, positive pitch → else `ConfigError`.
-- [ ] **Step 2: Run red.**
-- [ ] **Step 3: Implement.** `TrayLayout` frozen dataclass (`rows, cols, pitch_um{x,y}, first_cell_offset_um{x,y}, order`); pure `wafer_centers`. Add config parsing.
-- [ ] **Step 4: Run green.**
-- [ ] **Step 5: Commit** `feat(scan): tray geometry to wafer-center coordinates`.
+- [x] **Step 2: Run red.**
+- [x] **Step 3: Implement.** `TrayLayout` frozen dataclass (`rows, cols, pitch_um{x,y}, first_cell_offset_um{x,y}, order`); pure `wafer_centers`. Add config parsing.
+- [x] **Step 4: Run green.**
+- [x] **Step 5: Commit** `feat(scan): tray geometry to wafer-center coordinates`.
 
 ## Task 4: Scan pattern points (pure) + ScanPattern config
 
 **Files:** `src/lab_auto/scan/pattern.py`, `src/lab_auto/config.py` (add `ScanPattern`), `tests/test_scan_pattern.py`.
 
-- [ ] **Step 1: Write tests.**
+- [x] **Step 1: Write tests.**
   - `measurement_points(center_xy_um, pattern)` returns ordered points `[(x,y,role)]`: first the `center` (role `"center"`), then `surrounding.count` points at `surrounding.distance_um` and `surrounding.angles_deg` from the center (role `"surrounding_0"`, `...`). Default `count=2`.
   - Geometry: a point at distance D angle θ = `center + (D·cosθ, D·sinθ)`; verify exact coords for angles like 0/90/180.
   - `repeats_per_point` and `burn_check{metric, threshold}` are carried on the pattern for the workflow to read.
   - Validation: `count` matches `len(angles_deg)`, positive distance, `repeats_per_point >= 2` → else `ConfigError`.
-- [ ] **Step 2: Run red.**
-- [ ] **Step 3: Implement.** `ScanPattern` frozen dataclass (`repeats_per_point`, `burn_metric`, `burn_threshold`, `surrounding_count`, `surrounding_distance_um`, `surrounding_angles_deg: list[float]`); pure `measurement_points`. Add config parsing.
-- [ ] **Step 4: Run green.**
-- [ ] **Step 5: Commit** `feat(scan): per-center measurement point pattern`.
+- [x] **Step 2: Run red.**
+- [x] **Step 3: Implement.** `ScanPattern` frozen dataclass (`repeats_per_point`, `burn_metric`, `burn_threshold`, `surrounding_count`, `surrounding_distance_um`, `surrounding_angles_deg: list[float]`); pure `measurement_points`. Add config parsing.
+- [x] **Step 4: Run green.**
+- [x] **Step 5: Commit** `feat(scan): per-center measurement point pattern`.
 
 ## Task 5: Burn check (pure)
 
 **Files:** `src/lab_auto/processing/burn_check.py`, `tests/test_burn_check.py`.
 
-- [ ] **Step 1: Write tests.**
+- [x] **Step 1: Write tests.**
   - `compare_spectra(a, b, *, metric, threshold)` returns `{deviation: float, burned: bool}`.
   - `metric="relative_l2"`: deviation = `||a-b|| / (||a||+eps)`; identical spectra → 0, not burned; a large change → over threshold → `burned=True`.
   - Length mismatch → `ValueError`.
   - Deterministic; reuse the spectrum representation from `workflow/data.py` / `processing/background.py` (lists of intensities aligned by pixel/wavelength).
-- [ ] **Step 2: Run red.**
-- [ ] **Step 3: Implement.** Pure; support at least `relative_l2` (extensible by metric name).
-- [ ] **Step 4: Run green.**
-- [ ] **Step 5: Commit** `feat(processing): burn-check comparison of repeated spectra`.
+- [x] **Step 2: Run red.**
+- [x] **Step 3: Implement.** Pure; support at least `relative_l2` (extensible by metric name).
+- [x] **Step 4: Run green.**
+- [x] **Step 5: Commit** `feat(processing): burn-check comparison of repeated spectra`.
 
 ## Task 6: TrayScanConfig loader + example config
 
 **Files:** `src/lab_auto/config.py` (add `TrayScanConfig` + `load_tray_scan_config`), `configs/tray_scan.example.yaml`, `tests/test_tray_scan_config.py`.
 
-- [ ] **Step 1: Write tests.** Load `configs/tray_scan.example.yaml` into `TrayScanConfig` containing: `devices_config` path, `sample` info, `optics`+`acquisition` (reuse single-point shapes for the per-point measurement), `tray` (`TrayLayout`), `pattern` (`ScanPattern`), `calibration` (`Calibration`), `output`, and `on_out_of_range: skip|abort`. Reject malformed/unknown values with `ConfigError`. Reuse `load_workflow_and_devices`-style devices merge.
-- [ ] **Step 2: Run red.**
-- [ ] **Step 3: Implement.** `TrayScanConfig` frozen dataclass + loader composing the dataclasses from Tasks 2–4 and the existing `OpticsConfig`/`AcquisitionConfig`/`OutputConfig`. Create `configs/tray_scan.example.yaml` with sane placeholder values (documented as "set on hardware").
-- [ ] **Step 4: Run green** (also run `tests/test_config.py` to confirm no regressions).
-- [ ] **Step 5: Commit** `feat(config): tray-scan configuration loader and example`.
+- [x] **Step 1: Write tests.** Load `configs/tray_scan.example.yaml` into `TrayScanConfig` containing: `devices_config` path, `sample` info, `optics`+`acquisition` (reuse single-point shapes for the per-point measurement), `tray` (`TrayLayout`), `pattern` (`ScanPattern`), `calibration` (`Calibration`), `output`, and `on_out_of_range: skip|abort`. Reject malformed/unknown values with `ConfigError`. Reuse `load_workflow_and_devices`-style devices merge.
+- [x] **Step 2: Run red.**
+- [x] **Step 3: Implement.** `TrayScanConfig` frozen dataclass + loader composing the dataclasses from Tasks 2–4 and the existing `OpticsConfig`/`AcquisitionConfig`/`OutputConfig`. Create `configs/tray_scan.example.yaml` with sane placeholder values (documented as "set on hardware").
+- [x] **Step 4: Run green** (also run `tests/test_config.py` to confirm no regressions).
+- [x] **Step 5: Commit** `feat(config): tray-scan configuration loader and example`.
 
 ## Task 7: Tray scan workflow orchestration
 
@@ -209,7 +209,7 @@ for wafer in wafer_centers(tray):                          # ordered
 write manifest (wafer -> sample center -> points; pixel+stage coords, burn flags, status, paths)
 ```
 
-- [ ] **Step 1: Write tests** (fake stage with a position ledger + soft limits, fake light/spectrometer/camera, fixture mask provider):
+- [x] **Step 1: Write tests** (fake stage with a position ledger + soft limits, fake light/spectrometer/camera, fixture mask provider):
   - **Dry-run `plan()`** emits the ordered action sequence (move-to-wafer, capture, per-center moves, per-point ×2 measure, return-to-center) without touching hardware — mirror `RamanWorkflow.plan()` style.
   - Refuses (raises `SafetyError`) when a stage axis is `unknown`.
   - Out-of-range point: `on_out_of_range="skip"` skips it and records `skipped`; `"abort"` raises.
@@ -217,31 +217,31 @@ write manifest (wafer -> sample center -> points; pixel+stage coords, burn flags
   - Each point measured `repeats_per_point` times; burn flag recorded when the two fixture spectra differ over threshold.
   - Manifest structure: wafer → centers → points with pixel+stage coords, roles, burn flags, statuses, output paths.
   - **Resume**: given a manifest with some points done, a re-run skips completed points.
-- [ ] **Step 2: Run red.**
-- [ ] **Step 3: Implement** `TrayScanWorkflow` with `plan()` (dry-run action list) and `run()`; a `.real(...)` constructor style like `RamanWorkflow.real`. Compute relative moves from the stage's current ledger position (add a small position accessor on the stage if needed — do not rewrite the stage protocol). Wrap each point measurement via the existing single-point acquisition. Make it interruptible (write manifest incrementally) and resumable (skip points already `done` in an existing manifest).
-- [ ] **Step 4: Run green.**
-- [ ] **Step 5: Commit** `feat(workflow): tray->wafer->sample scan orchestration`.
+- [x] **Step 2: Run red.**
+- [x] **Step 3: Implement** `TrayScanWorkflow` with `plan()` (dry-run action list) and `run()`; a `.real(...)` constructor style like `RamanWorkflow.real`. Compute relative moves from the stage's current ledger position (add a small position accessor on the stage if needed — do not rewrite the stage protocol). Wrap each point measurement via the existing single-point acquisition. Make it interruptible (write manifest incrementally) and resumable (skip points already `done` in an existing manifest).
+- [x] **Step 4: Run green.**
+- [x] **Step 5: Commit** `feat(workflow): tray->wafer->sample scan orchestration`.
 
 ## Task 8: CLI `ramanctl scan` + real factory wiring
 
 **Files:** `src/lab_auto/cli.py`, `src/lab_auto/devices/factory.py`, `tests/test_scan_cli.py`.
 
-- [ ] **Step 1: Write tests.**
+- [x] **Step 1: Write tests.**
   - `ramanctl scan tray --config configs/tray_scan.example.yaml --dry-run` exits 0 and prints the planned action sequence (incl. wafer moves, captures, per-point measures, returns).
   - `--real` routes through `DeviceFactory.create_tray_scan_workflow` (patched/fake factory in tests, mirroring `test_hardware_cli.py` patterns) and never touches real hardware in the test.
   - Invalid config / `unknown` stage state surface as recoverable CLI failures (nonzero exit, message), consistent with existing CLI error handling.
-- [ ] **Step 2: Run red.**
-- [ ] **Step 3: Implement** the `scan` subcommand (mirror the `workflow single` command: `--config`, `--devices-config`, `--dry-run`/`--real`, `--yes`) and `DeviceFactory.create_tray_scan_workflow` (compose stage+spectrometer+camera+light like `create_single_point_workflow`, with the same finally-close cleanup; the mask provider on real hardware = camera capture + recognition hook, left as an injection point / TODO for the recognition code).
-- [ ] **Step 4: Run green** (`tests/test_scan_cli.py` + `tests/test_hardware_cli.py`).
-- [ ] **Step 5: Commit** `feat(cli): add ramanctl scan tray command`.
+- [x] **Step 2: Run red.**
+- [x] **Step 3: Implement** the `scan` subcommand (mirror the `workflow single` command: `--config`, `--devices-config`, `--dry-run`/`--real`, `--yes`) and `DeviceFactory.create_tray_scan_workflow` (compose stage+spectrometer+camera+light like `create_single_point_workflow`, with the same finally-close cleanup; the mask provider on real hardware = camera capture + recognition hook, left as an injection point / TODO for the recognition code).
+- [x] **Step 4: Run green** (`tests/test_scan_cli.py` + `tests/test_hardware_cli.py`).
+- [x] **Step 5: Commit** `feat(cli): add ramanctl scan tray command`.
 
 ## Task 9: Deferred hardware acceptance + full verification
 
 **Files:** `docs/phase2-hardware-acceptance.md` (add M2 section), final regression.
 
-- [ ] **Step 1: Add an M2 (tray scan) section** to `docs/phase2-hardware-acceptance.md`: preflight (stage homed; tray geometry measured; per-objective calibration captured via move-and-track; confirm image center = laser spot; recognition/mask hook wired), commands (`ramanctl scan tray --real --yes`), and pass criteria (refuses on `unknown` stage; returns to wafer center between samples; each point ×2 with burn flagging; out-of-range handling; manifest completeness; resumable).
-- [ ] **Step 2: Full regression.** `PYTHONPATH=src .venv/bin/python -m pytest -q` (all prior + M2 green); dry-run `ramanctl workflow single ... --dry-run` still emits its unchanged sequence; `ramanctl scan tray ... --dry-run` emits the layered sequence.
-- [ ] **Step 3: Mark this plan's checkboxes done; commit** `docs(plan): mark phase2 m2 complete` (+ any acceptance doc).
+- [x] **Step 1: Add an M2 (tray scan) section** to `docs/phase2-hardware-acceptance.md`: preflight (stage homed; tray geometry measured; per-objective calibration captured via move-and-track; confirm image center = laser spot; recognition/mask hook wired), commands (`ramanctl scan tray --real --yes`), and pass criteria (refuses on `unknown` stage; returns to wafer center between samples; each point ×2 with burn flagging; out-of-range handling; manifest completeness; resumable).
+- [x] **Step 2: Full regression.** `PYTHONPATH=src .venv/bin/python -m pytest -q` (all prior + M2 green); dry-run `ramanctl workflow single ... --dry-run` still emits its unchanged sequence; `ramanctl scan tray ... --dry-run` emits the layered sequence.
+- [x] **Step 3: Mark this plan's checkboxes done; commit** `docs(plan): mark phase2 m2 complete` (+ any acceptance doc).
 
 ---
 
