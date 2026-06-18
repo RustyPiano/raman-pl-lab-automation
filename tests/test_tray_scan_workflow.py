@@ -35,11 +35,16 @@ class FakeStage:
         self.ledger.position_um[axis] = self.ledger.position_um[axis] + um
         return [f"move:{axis}:{um}"]
 
+    def close(self):
+        raise AssertionError("tray-scan workflow must not close the stage directly; the measurer owns it")
+
 
 class FakeMeasurer:
     def __init__(self, intensity_fn):
         self.intensity_fn = intensity_fn
         self.calls = []
+        self.mask_calls = 0
+        self.closed = False
 
     def measure_point(self, *, point_id, x_um, y_um, role, repeat, require_confirmation):
         self.calls.append((point_id, role, repeat))
@@ -47,6 +52,9 @@ class FakeMeasurer:
             intensities=self.intensity_fn(role, repeat),
             output_path=f"out/{point_id}-{role}-rep{repeat}",
         )
+
+    def close(self):
+        self.closed = True
 
 
 def _homed_stage(**overrides):
@@ -242,3 +250,56 @@ def test_resume_skips_completed_points(tmp_path):
     wf2 = TrayScanWorkflow.real(cfg, stage=stage2, point_measurer=measurer2, mask_provider=lambda w: ONE_BLOB)
     wf2.run(require_confirmation=False)
     assert len(measurer2.calls) == 0
+
+
+def test_resume_skips_recapture_and_motion_for_completed_wafer(tmp_path):
+    # A fully-completed wafer must not be re-imaged or re-driven on resume.
+    pattern = ScanPattern(repeats_per_point=2, burn_metric="relative_l2", burn_threshold=0.5, surrounding_count=0, surrounding_distance_um=10.0, surrounding_angles_deg=[])
+    cfg = _config(tray=_tray_1x1(), pattern=pattern, calibration=_calib(), output_dir=tmp_path)
+
+    class CountingProvider:
+        def __init__(self):
+            self.calls = 0
+
+        def __call__(self, wafer):
+            self.calls += 1
+            return ONE_BLOB
+
+    p1 = CountingProvider()
+    wf1 = TrayScanWorkflow.real(cfg, stage=_homed_stage(), point_measurer=FakeMeasurer(lambda r, n: [1.0, 1.0]), mask_provider=p1)
+    wf1.run(require_confirmation=False)
+    assert p1.calls == 1
+
+    p2 = CountingProvider()
+    stage2 = _homed_stage()
+    wf2 = TrayScanWorkflow.real(cfg, stage=stage2, point_measurer=FakeMeasurer(lambda r, n: [1.0, 1.0]), mask_provider=p2)
+    wf2.run(require_confirmation=False)
+    assert p2.calls == 0  # completed wafer not re-imaged
+    assert stage2.ledger.position_um == {"x": 0.0, "y": 0.0}  # stage did not move
+
+
+def test_close_does_not_close_stage_directly(tmp_path):
+    pattern = ScanPattern(repeats_per_point=2, burn_metric="relative_l2", burn_threshold=0.5, surrounding_count=0, surrounding_distance_um=10.0, surrounding_angles_deg=[])
+    cfg = _config(tray=_tray_1x1(), pattern=pattern, calibration=_calib(), output_dir=tmp_path)
+    stage = _homed_stage()  # FakeStage.close() raises if called directly
+    measurer = FakeMeasurer(lambda r, n: [1.0, 1.0])  # measurer owns device teardown
+    wf = TrayScanWorkflow.real(cfg, stage=stage, point_measurer=measurer, mask_provider=lambda w: ONE_BLOB)
+    wf.close()  # must not raise
+    assert measurer.closed is True
+
+
+def test_burn_check_considers_all_repeats(tmp_path):
+    # repeats_per_point=3 where only the 3rd acquisition differs must still flag burned.
+    pattern = ScanPattern(repeats_per_point=3, burn_metric="relative_l2", burn_threshold=0.5, surrounding_count=0, surrounding_distance_um=10.0, surrounding_angles_deg=[])
+    cfg = _config(tray=_tray_1x1(), pattern=pattern, calibration=_calib(), output_dir=tmp_path)
+
+    def intensity(role, repeat):
+        return [10.0, 10.0, 10.0] if repeat < 2 else [1.0, 1.0, 1.0]
+
+    measurer = FakeMeasurer(intensity)
+    wf = TrayScanWorkflow.real(cfg, stage=_homed_stage(), point_measurer=measurer, mask_provider=lambda w: ONE_BLOB)
+    manifest = wf.run(require_confirmation=False)
+
+    assert len(measurer.calls) == 3
+    point = manifest["wafers"][0]["centers"][0]["points"][0]
+    assert point["burn"]["burned"] is True

@@ -58,7 +58,9 @@ class TrayScanWorkflow:
         return cls(config, False, stage, point_measurer, mask_provider, "real")
 
     def close(self) -> None:
-        for device in (self.stage, self.point_measurer, self.mask_provider):
+        # The point measurer owns the shared device teardown (stage, spectrometer,
+        # camera, light); closing the stage here too would double-close it.
+        for device in (self.point_measurer, self.mask_provider):
             close = getattr(device, "close", None)
             if close is not None:
                 close()
@@ -120,9 +122,11 @@ class TrayScanWorkflow:
         self._assert_stage_ready()
         self.config.output.directory.mkdir(parents=True, exist_ok=True)
         manifest_path = self.config.output.directory / "manifest.json"
-        manifest, done = self._load_manifest(manifest_path)
+        manifest, done, completed_wafers = self._load_manifest(manifest_path)
 
         for wafer in wafer_centers(self.config.tray):
+            if wafer.index in completed_wafers:
+                continue  # resume: don't re-image or re-drive a finished wafer
             wafer_entry = self._wafer_entry(manifest, wafer)
             self._move_to(wafer.x_um, wafer.y_um)
             for center in self._centers_for(wafer):
@@ -137,6 +141,8 @@ class TrayScanWorkflow:
                     done.add(key)
                     self._write_manifest(manifest_path, manifest)
                 self._move_to(wafer.x_um, wafer.y_um)  # return after each sample
+            wafer_entry["status"] = "done"  # mark complete so a resume skips it
+            self._write_manifest(manifest_path, manifest)
         self._write_manifest(manifest_path, manifest)
         return manifest
 
@@ -161,13 +167,24 @@ class TrayScanWorkflow:
             )
             spectra.append(list(result.intensities))
             outputs.append(str(result.output_path))
-        burn = compare_spectra(
-            spectra[0],
-            spectra[1],
-            metric=self.config.pattern.burn_metric,
-            threshold=self.config.pattern.burn_threshold,
-        )
+        burn = self._burn_check(spectra)
         return {"role": role, "x_um": x, "y_um": y, "status": "done", "burn": burn, "outputs": outputs}
+
+    def _burn_check(self, spectra) -> dict:
+        # Compare every consecutive repeat pair; flag burned if any pair exceeds
+        # the threshold (so repeats_per_point > 2 is not silently dropped).
+        deviation = 0.0
+        burned = False
+        for a, b in zip(spectra, spectra[1:]):
+            result = compare_spectra(
+                a,
+                b,
+                metric=self.config.pattern.burn_metric,
+                threshold=self.config.pattern.burn_threshold,
+            )
+            deviation = max(deviation, result["deviation"])
+            burned = burned or result["burned"]
+        return {"deviation": deviation, "burned": burned}
 
     # -- manifest --------------------------------------------------------
 
@@ -175,19 +192,22 @@ class TrayScanWorkflow:
         if path.exists():
             manifest = json.loads(path.read_text(encoding="utf-8"))
             done = set()
+            completed_wafers = set()
             for wafer in manifest.get("wafers", []):
+                if wafer.get("status") == "done":
+                    completed_wafers.add(wafer["index"])
                 for center in wafer.get("centers", []):
                     for point in center.get("points", []):
                         if point.get("status") in ("done", "skipped"):
                             done.add(f"{wafer['index']}:{center['label']}:{point['role']}")
-            return manifest, done
+            return manifest, done, completed_wafers
         manifest = {
             "sample_id": self.config.sample.id,
             "operator": self.config.sample.operator,
             "runtime_mode": self.runtime_mode,
             "wafers": [],
         }
-        return manifest, set()
+        return manifest, set(), set()
 
     def _wafer_entry(self, manifest, wafer) -> dict:
         for entry in manifest["wafers"]:
