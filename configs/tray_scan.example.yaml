@@ -1,0 +1,64 @@
+# Tray -> wafer -> sample layered scan.
+# Placeholder values; the geometry, calibration, and pattern numbers marked
+# "set on hardware" are measured on the lab machine during acceptance.
+devices_config: configs/devices.example.yaml
+
+sample:
+  id: tray-001
+  operator: lab
+
+# Per-point measurement reuses the single-point optics/acquisition shapes.
+optics:
+  entrance_port: side
+  exit_port: direct
+  grating: 1  # Zolix turret: 1=1800 g/mm, 2=600 g/mm, 3=150 g/mm
+  center_wavelength_nm: 600
+  slit_width_um: 100
+
+acquisition:
+  exposure_ms: 1000
+  gain: low
+  read_mode: fvb
+  frames: 1
+  subtract_background: true
+
+output:
+  directory: output/tray_scan
+  formats: [csv, json]
+
+# Sample-tray grid (wafer centers from known geometry). Set on hardware.
+tray:
+  rows: 2
+  cols: 3
+  pitch_x_um: 10000
+  pitch_y_um: 10000
+  first_cell_offset_x_um: 0
+  first_cell_offset_y_um: 0
+  order: serpentine  # row_major | serpentine
+
+# Per detected sample center: center + surrounding points, each measured
+# repeats_per_point times as a burn check (compared, not averaged).
+pattern:
+  repeats_per_point: 2
+  burn_metric: relative_l2
+  burn_threshold: 0.1
+  surrounding_count: 2
+  surrounding_distance_um: 20
+  surrounding_angles_deg: [0, 90]
+
+# Per-objective affine pixel->stage calibration. Captured on hardware via
+# move-and-track; A = um-per-pixel, image center = origin (= laser spot).
+calibration:
+  objective: "50x"
+  a11: 0.5
+  a12: 0.0
+  a21: 0.0
+  a22: 0.5
+  image_center_px: 320
+  image_center_py: 240
+
+# Minimum connected-component area (px) to treat a mask blob as a sample.
+min_area: 5
+
+# Out-of-soft-limit measurement point handling: skip | abort.
+on_out_of_range: skip

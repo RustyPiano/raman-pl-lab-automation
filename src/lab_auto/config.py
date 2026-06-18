@@ -155,6 +155,20 @@ class ScanPattern:
     surrounding_angles_deg: list[float]
 
 
+@dataclass(frozen=True)
+class TrayScanConfig:
+    devices_config: Path
+    sample: SampleConfig
+    optics: OpticsConfig
+    acquisition: AcquisitionConfig
+    output: OutputConfig
+    tray: TrayLayout
+    pattern: ScanPattern
+    calibration: Calibration
+    min_area: int
+    on_out_of_range: str
+
+
 def _read_yaml(path: Path) -> dict[str, Any]:
     if not path.exists():
         raise ConfigError(f"configuration file does not exist: {path}")
@@ -307,38 +321,50 @@ def load_devices_config(path: str | Path) -> DevicesConfig:
         raise ConfigError(f"invalid devices configuration in {config_path}: {exc}") from exc
 
 
+def _parse_sample(sample: Any) -> SampleConfig:
+    return SampleConfig(id=str(sample["id"]), operator=str(sample["operator"]))
+
+
+def _parse_optics(optics: Any) -> OpticsConfig:
+    return OpticsConfig(
+        entrance_port=str(optics["entrance_port"]),
+        exit_port=str(optics["exit_port"]),
+        grating=_finite_int(optics["grating"], field="grating"),
+        center_wavelength_nm=_finite_float(optics["center_wavelength_nm"], field="center_wavelength_nm"),
+        slit_width_um=_finite_int(optics["slit_width_um"], field="slit_width_um"),
+    )
+
+
+def _parse_acquisition(acquisition: Any) -> AcquisitionConfig:
+    return AcquisitionConfig(
+        exposure_ms=_finite_float(acquisition["exposure_ms"], field="exposure_ms"),
+        gain=str(acquisition["gain"]),
+        read_mode=str(acquisition["read_mode"]),
+        frames=_finite_int(acquisition["frames"], field="frames"),
+        subtract_background=_as_bool(acquisition["subtract_background"], field="subtract_background"),
+    )
+
+
+def _parse_output(output: Any) -> OutputConfig:
+    formats = output["formats"]
+    if not isinstance(formats, list):
+        raise ConfigError("output.formats must be a list")
+    return OutputConfig(
+        directory=Path(output["directory"]),
+        formats=[str(item) for item in formats],
+    )
+
+
 def load_workflow_config(path: str | Path) -> WorkflowConfig:
     config_path = Path(path)
     data = _read_yaml(config_path)
     try:
-        sample = data["sample"]
-        optics = data["optics"]
-        acquisition = data["acquisition"]
-        output = data["output"]
-        formats = output["formats"]
-        if not isinstance(formats, list):
-            raise ConfigError(f"output.formats must be a list in {config_path}")
         return WorkflowConfig(
             devices_config=Path(data["devices_config"]),
-            sample=SampleConfig(id=str(sample["id"]), operator=str(sample["operator"])),
-            optics=OpticsConfig(
-                entrance_port=str(optics["entrance_port"]),
-                exit_port=str(optics["exit_port"]),
-                grating=_finite_int(optics["grating"], field="grating"),
-                center_wavelength_nm=_finite_float(optics["center_wavelength_nm"], field="center_wavelength_nm"),
-                slit_width_um=_finite_int(optics["slit_width_um"], field="slit_width_um"),
-            ),
-            acquisition=AcquisitionConfig(
-                exposure_ms=_finite_float(acquisition["exposure_ms"], field="exposure_ms"),
-                gain=str(acquisition["gain"]),
-                read_mode=str(acquisition["read_mode"]),
-                frames=_finite_int(acquisition["frames"], field="frames"),
-                subtract_background=_as_bool(acquisition["subtract_background"], field="subtract_background"),
-            ),
-            output=OutputConfig(
-                directory=Path(output["directory"]),
-                formats=[str(item) for item in formats],
-            ),
+            sample=_parse_sample(data["sample"]),
+            optics=_parse_optics(data["optics"]),
+            acquisition=_parse_acquisition(data["acquisition"]),
+            output=_parse_output(data["output"]),
         )
     except KeyError as exc:
         raise ConfigError(f"missing required workflow configuration field: {exc.args[0]} in {config_path}") from exc
@@ -354,3 +380,85 @@ def load_workflow_and_devices(
     workflow = load_workflow_config(workflow_path)
     devices_path = Path(devices_override) if devices_override is not None else workflow.devices_config
     return workflow, load_devices_config(devices_path)
+
+
+def _parse_tray(tray: Any) -> TrayLayout:
+    layout = TrayLayout(
+        rows=_finite_int(tray["rows"], field="tray.rows"),
+        cols=_finite_int(tray["cols"], field="tray.cols"),
+        pitch_x_um=_finite_float(tray["pitch_x_um"], field="tray.pitch_x_um"),
+        pitch_y_um=_finite_float(tray["pitch_y_um"], field="tray.pitch_y_um"),
+        first_cell_offset_x_um=_finite_float(tray["first_cell_offset_x_um"], field="tray.first_cell_offset_x_um"),
+        first_cell_offset_y_um=_finite_float(tray["first_cell_offset_y_um"], field="tray.first_cell_offset_y_um"),
+        order=str(tray["order"]),
+    )
+    if layout.rows <= 0 or layout.cols <= 0:
+        raise ConfigError("tray.rows and tray.cols must be positive")
+    if layout.pitch_x_um <= 0 or layout.pitch_y_um <= 0:
+        raise ConfigError("tray pitch must be positive")
+    if layout.order not in ("row_major", "serpentine"):
+        raise ConfigError(f"unknown tray.order: {layout.order!r}")
+    return layout
+
+
+def _parse_pattern(pattern: Any) -> ScanPattern:
+    angles = pattern["surrounding_angles_deg"]
+    if not isinstance(angles, list):
+        raise ConfigError("pattern.surrounding_angles_deg must be a list")
+    result = ScanPattern(
+        repeats_per_point=_finite_int(pattern["repeats_per_point"], field="pattern.repeats_per_point"),
+        burn_metric=str(pattern["burn_metric"]),
+        burn_threshold=_finite_float(pattern["burn_threshold"], field="pattern.burn_threshold"),
+        surrounding_count=_finite_int(pattern["surrounding_count"], field="pattern.surrounding_count"),
+        surrounding_distance_um=_finite_float(pattern["surrounding_distance_um"], field="pattern.surrounding_distance_um"),
+        surrounding_angles_deg=[_finite_float(a, field="pattern.surrounding_angles_deg") for a in angles],
+    )
+    if result.repeats_per_point < 2:
+        raise ConfigError("pattern.repeats_per_point must be >= 2 for a burn check")
+    if result.surrounding_count != len(result.surrounding_angles_deg):
+        raise ConfigError("pattern.surrounding_count must equal len(surrounding_angles_deg)")
+    if result.surrounding_count > 0 and result.surrounding_distance_um <= 0:
+        raise ConfigError("pattern.surrounding_distance_um must be positive")
+    if result.burn_metric != "relative_l2":
+        raise ConfigError(f"unknown pattern.burn_metric: {result.burn_metric!r}")
+    return result
+
+
+def _parse_calibration(calibration: Any) -> Calibration:
+    return Calibration(
+        objective=str(calibration["objective"]),
+        a11=_finite_float(calibration["a11"], field="calibration.a11"),
+        a12=_finite_float(calibration["a12"], field="calibration.a12"),
+        a21=_finite_float(calibration["a21"], field="calibration.a21"),
+        a22=_finite_float(calibration["a22"], field="calibration.a22"),
+        image_center_px=_finite_float(calibration["image_center_px"], field="calibration.image_center_px"),
+        image_center_py=_finite_float(calibration["image_center_py"], field="calibration.image_center_py"),
+    )
+
+
+def load_tray_scan_config(path: str | Path) -> TrayScanConfig:
+    config_path = Path(path)
+    data = _read_yaml(config_path)
+    try:
+        min_area = _finite_int(data.get("min_area", 1), field="min_area")
+        if min_area < 1:
+            raise ConfigError("min_area must be >= 1")
+        on_out_of_range = str(data["on_out_of_range"])
+        if on_out_of_range not in ("skip", "abort"):
+            raise ConfigError(f"unknown on_out_of_range: {on_out_of_range!r} (use skip|abort)")
+        return TrayScanConfig(
+            devices_config=Path(data["devices_config"]),
+            sample=_parse_sample(data["sample"]),
+            optics=_parse_optics(data["optics"]),
+            acquisition=_parse_acquisition(data["acquisition"]),
+            output=_parse_output(data["output"]),
+            tray=_parse_tray(data["tray"]),
+            pattern=_parse_pattern(data["pattern"]),
+            calibration=_parse_calibration(data["calibration"]),
+            min_area=min_area,
+            on_out_of_range=on_out_of_range,
+        )
+    except KeyError as exc:
+        raise ConfigError(f"missing required tray-scan configuration field: {exc.args[0]} in {config_path}") from exc
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ConfigError(f"invalid tray-scan configuration in {config_path}: {exc}") from exc
