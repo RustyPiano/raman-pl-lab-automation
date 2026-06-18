@@ -1,9 +1,12 @@
 # Lab Automation Phase 2 Scope & Sequencing Plan
 
-> **Status (2026-06-13): Phase 2 M1 code-complete, pending on-hardware acceptance.**
+> **Status (2026-06-18): Phase 2 M1 + M2 code-complete, pending on-hardware acceptance.**
 > Phase 1 MVP is code-complete and merged to `main` (`36518da`, `caa3429`).
-> Phase 2 M1 PWM Modbus light backend is also implemented and merged to `main`;
-> 296 tests pass locally. The only outstanding Phase 1/M1 gates are the
+> Phase 2 M1 (PWM Modbus light backend) and M2 (tray→wafer→sample layered scan)
+> are both implemented and merged to `main`; **350 tests pass locally**. M2's
+> per-task TDD plan and final state live in
+> [`2026-06-18-phase2-m2-tray-scan.md`](2026-06-18-phase2-m2-tray-scan.md).
+> The only outstanding Phase 1/M1/M2 gates are the
 > on-hardware acceptance runs in
 > [`docs/phase1-hardware-acceptance.md`](../../phase1-hardware-acceptance.md)
 > and [`docs/phase2-hardware-acceptance.md`](../../phase2-hardware-acceptance.md),
@@ -35,13 +38,13 @@
 | # | 状态 | 里程碑 | 依赖 | 真机前置（上机才确认） |
 |---|------|--------|------|------------------------|
 | **M1** | 代码完成；待真机验收 | 真实 PWM 光源后端（Modbus RTU） | 无（扩展现有 light 分层） | 通道映射、COM 口、站号、频率/占空比、接线安全、联锁可读性 |
-| **M2** | 下一步计划 | 样品盘分层扫描（晶片→掩码→样品中心→每中心3点×2）+ CLI | 依赖 stage 安全状态机（已存在）；复用 M1 光源 + 单点工作流；中心提取/标定/编排自研 | 位移台标定、像素↔位移台标定、样品盘几何、激光斑=图像中心确认 |
+| **M2** | 代码完成；待真机验收 | 样品盘分层扫描（晶片→掩码→样品中心→每中心3点×2）+ `ramanctl scan tray` | 依赖 stage 安全状态机（已存在）；复用 M1 光源 + 单点工作流；中心提取/标定/编排自研 | 位移台标定、像素↔位移台标定、样品盘几何、激光斑=图像中心确认、识别 mask hook |
 | **M3** | 未开始 | 采集后处理增强（峰检测、基线校正、自动曝光、批量调度） | M2（批量调度复用中心点列表扫描） | 无（纯数据处理，可离线验收） |
 | **M4** | 未开始 | daemon / session 模式（`ramanctl shell` 或 daemon） | M1–M3 适配器稳定 | 无 |
 | **M5** | 未开始 | Agent tool schema + 权限系统 | M1–M4（暴露稳定能力） | 无 |
 | **M6** | 阻塞于厂家 API | 厂家 HTTP 光源后端（M1 的替代/补充） | M1；厂家 API 上线 | HTTP 端口、命令字符串、状态读回、错误格式 |
 
-**当前建议先做 M2。** M1 已完成 dry-run/simulated 开发，真实串口验收推迟；M2 能继续推进样品中心定点扫描自动化，并复用现有 stage 安全状态机、M1 光源和单点工作流。识别算法（冯博士）未到不阻塞 M2——M2 只消费"中心点列表"契约，用手填列表即可开发验证。M6 仍是同接口替代后端，等厂家 API 上线再做。
+**M2 已完成（2026-06-18），下一步候选 M3。** M1+M2 均完成 dry-run/simulated/fake 开发，真机验收统一推迟。M2 实现了样品盘分层扫描（掩码→中心提取、像素↔位移台仿射标定、盘几何、扫描点图案、烧样检查、编排 manifest/可恢复、`ramanctl scan tray`），复用现有 stage 安全状态机、M1 光源和单点工作流。识别算法（冯博士）只给 mask，中心提取/格式自研，真机注入识别 hook。M3 采集后处理可复用 M2 的中心点列表批量扫描。M6 仍是同接口替代后端，等厂家 API 上线再做。
 
 ---
 
