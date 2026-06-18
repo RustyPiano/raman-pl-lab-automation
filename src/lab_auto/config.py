@@ -126,6 +126,19 @@ class Calibration:
     image_center_py: float
 
 
+@dataclass(frozen=True)
+class TrayLayout:
+    """Sample-tray grid geometry (wafer-center coords from known geometry)."""
+
+    rows: int
+    cols: int
+    pitch_x_um: float
+    pitch_y_um: float
+    first_cell_offset_x_um: float
+    first_cell_offset_y_um: float
+    order: str
+
+
 def _read_yaml(path: Path) -> dict[str, Any]:
     if not path.exists():
         raise ConfigError(f"configuration file does not exist: {path}")
