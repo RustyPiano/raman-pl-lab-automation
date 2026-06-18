@@ -5,7 +5,7 @@ This gate is intentionally deferred until then, consistent with Phase 1.
 
 ## Preflight (confirm with 老师 / 厂家 before powering anything)
 
-1. Which PWM channel drives the **laser**, and which drives the **white LED**.
+1. Which PWM channel drives the **laser**, and which drives the **white LED** — read these CH numbers from the **MAPS system-config "mode" page** (Image mode = LED on; Test mode = LED off + laser on; 5 channels total, can probe one by one).
 2. Actual **COM port**, non-zero **station id**, and RS485 wiring.
 3. Per-channel **frequency_hz** and **duty_percent**, and the default-off requirement.
 4. The regulated-supply output terminal wiring is confirmed safe to energize.
