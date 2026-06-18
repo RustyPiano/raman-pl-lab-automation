@@ -21,10 +21,54 @@ from lab_auto.devices.waynelabs_stage import WAYNELABS_SERIAL_READ_TIMEOUT_S, Po
 from lab_auto.devices.zolix_spectrometer import ZolixSpectrometer
 from lab_auto.errors import DeviceError
 from lab_auto.workflow.raman import RamanWorkflow
+from lab_auto.workflow.tray_scan import TrayScanWorkflow
 
 
 def _path_exists(path: Path) -> bool:
     return Path(path).exists()
+
+
+def _scan_to_workflow_config(scan_config) -> WorkflowConfig:
+    """Adapt the per-point fields of a tray-scan config to a single-point config."""
+    return WorkflowConfig(
+        devices_config=scan_config.devices_config,
+        sample=scan_config.sample,
+        optics=scan_config.optics,
+        acquisition=scan_config.acquisition,
+        output=scan_config.output,
+    )
+
+
+def _unwired_mask_provider(wafer):
+    raise DeviceError(
+        "tray-scan mask provider is not wired: inject a recognition hook "
+        "(camera capture + sample recognition) via create_tray_scan_workflow(mask_provider=...)"
+    )
+
+
+class RamanPointMeasurer:
+    """Per-point measurement primitive backed by the single-point Raman workflow.
+
+    Each call runs one single-point acquisition and returns its sample
+    intensities so the tray-scan workflow can burn-check the repeats.
+    """
+
+    def __init__(self, raman: "RamanWorkflow"):
+        self.raman = raman
+
+    def measure_point(self, *, point_id, x_um, y_um, role, repeat, require_confirmation):
+        import csv
+        from types import SimpleNamespace
+
+        run_dir = self.raman.run_single_point(require_confirmation=require_confirmation)
+        intensities: list[float] = []
+        with (run_dir / "raw.csv").open(encoding="utf-8") as handle:
+            for row in csv.DictReader(handle):
+                intensities.append(float(row["intensity_raw"]))
+        return SimpleNamespace(intensities=intensities, output_path=str(run_dir))
+
+    def close(self) -> None:
+        self.raman.close()
 
 
 class DeviceFactory:
@@ -177,6 +221,34 @@ class DeviceFactory:
             )
         except Exception as exc:
             raise DeviceError(f"failed to open PWM light serial port {light_config.port}: {exc}") from exc
+
+    def create_tray_scan_workflow(self, scan_config, devices_config: DevicesConfig, *, mask_provider=None):
+        """Compose a real tray-scan workflow.
+
+        The per-point measurement reuses the single-point Raman primitive; the
+        ``mask_provider`` (camera capture + recognition) is injected by the
+        recognition integration and is required for a real run.
+        """
+        light = self.create_light(devices_config)
+        stage = None
+        spectrometer = None
+        camera = None
+        try:
+            stage = self.create_stage(devices_config)
+            spectrometer = self.create_spectrometer(devices_config)
+            camera = self.create_camera(devices_config)
+            workflow_config = _scan_to_workflow_config(scan_config)
+            raman = RamanWorkflow.real(workflow_config, stage=stage, spectrometer=spectrometer, camera=camera, light=light)
+            measurer = RamanPointMeasurer(raman)
+            provider = mask_provider if mask_provider is not None else _unwired_mask_provider
+            return TrayScanWorkflow.real(scan_config, stage=stage, point_measurer=measurer, mask_provider=provider)
+        except Exception:
+            for device in (camera, spectrometer, stage, light):
+                if device is not None:
+                    close = getattr(device, "close", None)
+                    if close is not None:
+                        close()
+            raise
 
     def create_single_point_workflow(self, workflow_config: WorkflowConfig, devices_config: DevicesConfig):
         light = self.create_light(devices_config)

@@ -3,7 +3,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 
-from lab_auto.config import RuntimeConfig, load_devices_config, load_workflow_and_devices
+from lab_auto.config import RuntimeConfig, load_devices_config, load_tray_scan_config, load_workflow_and_devices
 from lab_auto.devices.dfield_validation import validate_dfield_capture_args
 from lab_auto.devices.factory import DeviceFactory
 from lab_auto.devices.optics_validation import validate_zolix_optics
@@ -13,6 +13,7 @@ from lab_auto.devices.zolix_spectrometer import direct_to_front_bool
 from lab_auto.errors import ConfigError, DeviceError, SafetyError
 from lab_auto.runtime import RuntimeMode, resolve_runtime_mode
 from lab_auto.workflow.raman import RamanWorkflow
+from lab_auto.workflow.tray_scan import TrayScanWorkflow, simulated_mask_provider
 
 
 def add_runtime_flags(parser: argparse.ArgumentParser) -> None:
@@ -100,6 +101,14 @@ def build_parser() -> argparse.ArgumentParser:
     single.add_argument("--devices-config")
     single.add_argument("--yes", action="store_true")
     add_runtime_flags(single)
+
+    scan = subparsers.add_parser("scan")
+    scan_sub = scan.add_subparsers(dest="command", required=True)
+    tray = scan_sub.add_parser("tray")
+    tray.add_argument("--config", required=True)
+    tray.add_argument("--devices-config")
+    tray.add_argument("--yes", action="store_true")
+    add_runtime_flags(tray)
     return parser
 
 
@@ -348,6 +357,26 @@ def main(argv: Sequence[str] | None = None, *, factory: DeviceFactory | None = N
                     print(action)
             else:
                 print(workflow.run_single_point(require_confirmation=not args.yes))
+            return 0
+
+        if args.domain == "scan" and args.command == "tray":
+            scan_config = load_tray_scan_config(args.config)
+            devices_path = args.devices_config or scan_config.devices_config
+            devices_config = load_devices_config(devices_path)
+            mode = resolve_runtime_mode(devices_config.runtime.mode, cli_real=args.real, cli_dry_run=args.dry_run, cli_simulated=args.simulated)
+            devices_config = _with_runtime_mode(devices_config, mode)
+            print(f"devices_config:{devices_path}")
+            if mode is RuntimeMode.REAL:
+                workflow = factory.create_tray_scan_workflow(scan_config, devices_config)
+                try:
+                    workflow.run(require_confirmation=not args.yes)
+                    print(f"tray_scan_complete:{scan_config.output.directory}")
+                finally:
+                    workflow.close()
+                return 0
+            preview = TrayScanWorkflow.dry_run(scan_config, mask_provider=simulated_mask_provider())
+            for action in preview.plan():
+                print(action)
             return 0
 
         devices_config = load_devices_config(args.config) if getattr(args, "config", None) else None

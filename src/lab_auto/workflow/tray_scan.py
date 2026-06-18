@@ -25,6 +25,21 @@ def _fmt(x: float, y: float) -> str:
     return f"{x:.3f},{y:.3f}"
 
 
+def simulated_mask_provider(center_px: float = 0.0, center_py: float = 0.0):
+    """A deterministic mask provider for dry-run/preview.
+
+    Returns a single 3x3 foreground blob so ``plan()`` previews the full
+    per-center / per-point sequence without any recognition code or hardware.
+    """
+
+    blob = [[1, 1, 1], [1, 1, 1], [1, 1, 1]]
+
+    def provider(wafer):
+        return blob
+
+    return provider
+
+
 @dataclass
 class TrayScanWorkflow:
     config: TrayScanConfig
@@ -41,6 +56,12 @@ class TrayScanWorkflow:
     @classmethod
     def real(cls, config: TrayScanConfig, *, stage, point_measurer, mask_provider) -> "TrayScanWorkflow":
         return cls(config, False, stage, point_measurer, mask_provider, "real")
+
+    def close(self) -> None:
+        for device in (self.stage, self.point_measurer, self.mask_provider):
+            close = getattr(device, "close", None)
+            if close is not None:
+                close()
 
     # -- geometry helpers ------------------------------------------------
 
