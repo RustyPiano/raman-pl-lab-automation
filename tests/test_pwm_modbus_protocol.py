@@ -76,6 +76,12 @@ def test_voltage_over_cap_rejected():
         build_write_voltage_request(station=1, voltage_v=5.1)
 
 
+def test_voltage_just_over_cap_not_rounded_down():
+    # 5.04 V must be rejected, not rounded down to 50 (5.0 V).
+    with pytest.raises(ProtocolError):
+        voltage_to_register(5.04)
+
+
 def test_build_write_voltage_request_uses_0x0032():
     frame = build_write_voltage_request(station=1, voltage_v=5.0)
     # station, 0x06, Reg1 = 00 01, value = 00 32

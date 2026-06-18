@@ -120,6 +120,34 @@ def test_scan_tray_invalid_config_is_recoverable(tmp_path: Path, capsys):
     assert "error:" in capsys.readouterr().out
 
 
+def test_scan_tray_real_without_recognition_hook_fails_before_hardware(tmp_path: Path, capsys):
+    # Real scan via the default factory has no mask provider wired yet: it must
+    # fail fast (recoverable) without opening devices or moving the stage.
+    devices = tmp_path / "devices.yaml"
+    scan = tmp_path / "tray_scan.yaml"
+    write_devices_config(devices)
+    write_scan_config(scan, devices, tmp_path / "out")
+
+    exit_code = main(["scan", "tray", "--config", str(scan), "--devices-config", str(devices), "--real", "--yes"])
+
+    assert exit_code == 2
+    assert "error:" in capsys.readouterr().out
+
+
+def test_scan_tray_invalid_per_point_config_rejected_early(tmp_path: Path, capsys):
+    devices = tmp_path / "devices.yaml"
+    scan = tmp_path / "tray_scan.yaml"
+    write_devices_config(devices)
+    write_scan_config(scan, devices, tmp_path / "out")
+    bad = scan.read_text(encoding="utf-8").replace("read_mode: fvb", "read_mode: image")
+    scan.write_text(bad, encoding="utf-8")
+
+    exit_code = main(["scan", "tray", "--config", str(scan), "--dry-run"])
+
+    assert exit_code == 2
+    assert "error:" in capsys.readouterr().out
+
+
 class FakeScanFactory:
     def __init__(self, *, raise_safety: bool = False):
         self.created = False

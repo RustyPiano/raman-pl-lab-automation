@@ -3,7 +3,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 
-from lab_auto.config import RuntimeConfig, load_devices_config, load_tray_scan_config, load_workflow_and_devices
+from lab_auto.config import RuntimeConfig, load_devices_config, load_tray_scan_config, load_workflow_and_devices, workflow_config_from_tray_scan
 from lab_auto.devices.dfield_validation import validate_dfield_capture_args
 from lab_auto.devices.factory import DeviceFactory
 from lab_auto.devices.optics_validation import validate_zolix_optics
@@ -361,6 +361,7 @@ def main(argv: Sequence[str] | None = None, *, factory: DeviceFactory | None = N
 
         if args.domain == "scan" and args.command == "tray":
             scan_config = load_tray_scan_config(args.config)
+            RamanWorkflow.dry_run(workflow_config_from_tray_scan(scan_config)).validate_single_point_config()
             devices_path = args.devices_config or scan_config.devices_config
             devices_config = load_devices_config(devices_path)
             mode = resolve_runtime_mode(devices_config.runtime.mode, cli_real=args.real, cli_dry_run=args.dry_run, cli_simulated=args.simulated)

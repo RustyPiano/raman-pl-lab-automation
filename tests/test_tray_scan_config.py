@@ -66,6 +66,12 @@ def test_pattern_count_mismatch_rejected(tmp_path):
         load_tray_scan_config(_write(tmp_path, body))
 
 
+def test_singular_calibration_matrix_rejected(tmp_path):
+    body = _valid_body().replace("a22: 0.5", "a22: 0.0")  # det = 0.5*0 - 0*0 = 0
+    with pytest.raises(ConfigError):
+        load_tray_scan_config(_write(tmp_path, body))
+
+
 def test_missing_file_raises():
     with pytest.raises(ConfigError):
         load_tray_scan_config(Path("configs/does_not_exist.yaml"))

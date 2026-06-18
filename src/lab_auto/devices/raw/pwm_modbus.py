@@ -106,12 +106,13 @@ def freq_registers(channel: int) -> tuple[int, int]:
 def voltage_to_register(voltage_v: float) -> int:
     if isinstance(voltage_v, bool) or not isinstance(voltage_v, (int, float)):
         raise ProtocolError("voltage must be a number")
-    deci = round(float(voltage_v) * 10)
-    if deci < 0:
+    scaled = float(voltage_v) * 10
+    if scaled < 0:
         raise ProtocolError("voltage must be non-negative")
-    if deci > MAX_VOLTAGE_DECIVOLT:
+    # Enforce the hard cap before rounding so e.g. 5.04 V cannot round down to 5.0.
+    if scaled > MAX_VOLTAGE_DECIVOLT:
         raise ProtocolError("voltage exceeds the 5.0 V hard cap")
-    return deci
+    return round(scaled)
 
 
 def register_to_voltage(register_value: int) -> float:

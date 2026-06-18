@@ -129,6 +129,20 @@ def test_single_workflow_writes_core_outputs(tmp_path: Path):
     assert (run_dir / "raw.csv").exists()
     assert (run_dir / "corrected.csv").exists()
     assert (run_dir / "run.log").exists()
+    # simulated workflow has no stage -> position is null, not a stale value
+    assert metadata["stage_position_um"] is None
+
+
+def test_metadata_records_stage_position_when_available(tmp_path: Path):
+    from types import SimpleNamespace
+
+    workflow = RamanWorkflow.simulated(workflow_config(tmp_path))
+    workflow.stage = SimpleNamespace(ledger=SimpleNamespace(position_um={"x": 12.5, "y": -3.0}))
+
+    run_dir = workflow.run_single_point(require_confirmation=False)
+
+    metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["stage_position_um"] == {"x": 12.5, "y": -3.0}
 
 
 def test_single_workflow_uses_distinct_run_directories(tmp_path: Path):

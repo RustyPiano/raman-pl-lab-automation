@@ -186,7 +186,7 @@ class RamanWorkflow:
                     "operator": self.config.sample.operator,
                     "x_axis_type": raw.x_axis_type,
                     "runtime_mode": self.runtime_mode,
-                    "stage_position_um": None,
+                    "stage_position_um": self._stage_position(),
                     "devices": {
                         "stage": self._stage_metadata(),
                         "spectrometer": self._device_status(self.spectrometer, fallback_type="spectrometer"),
@@ -261,6 +261,14 @@ class RamanWorkflow:
         set_slit_width_um = getattr(self.spectrometer, "set_slit_width_um", None)
         if set_slit_width_um is not None:
             set_slit_width_um(self.config.optics.slit_width_um)
+
+    def _stage_position(self) -> dict | None:
+        stage = getattr(self, "stage", None)
+        ledger = getattr(stage, "ledger", None)
+        positions = getattr(ledger, "position_um", None)
+        if not isinstance(positions, dict) or not positions:
+            return None
+        return {axis: value for axis, value in positions.items()}
 
     def _stage_metadata(self) -> dict | None:
         stage = getattr(self, "stage", None)

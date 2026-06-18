@@ -424,8 +424,23 @@ def _parse_pattern(pattern: Any) -> ScanPattern:
     return result
 
 
+def workflow_config_from_tray_scan(scan_config: "TrayScanConfig") -> WorkflowConfig:
+    """Adapt a tray-scan config's per-point fields to a single-point WorkflowConfig.
+
+    The tray scan reuses the single-point optics/acquisition primitive, so the
+    same validation applies to each measurement point.
+    """
+    return WorkflowConfig(
+        devices_config=scan_config.devices_config,
+        sample=scan_config.sample,
+        optics=scan_config.optics,
+        acquisition=scan_config.acquisition,
+        output=scan_config.output,
+    )
+
+
 def _parse_calibration(calibration: Any) -> Calibration:
-    return Calibration(
+    result = Calibration(
         objective=str(calibration["objective"]),
         a11=_finite_float(calibration["a11"], field="calibration.a11"),
         a12=_finite_float(calibration["a12"], field="calibration.a12"),
@@ -434,6 +449,9 @@ def _parse_calibration(calibration: Any) -> Calibration:
         image_center_px=_finite_float(calibration["image_center_px"], field="calibration.image_center_px"),
         image_center_py=_finite_float(calibration["image_center_py"], field="calibration.image_center_py"),
     )
+    if result.a11 * result.a22 - result.a12 * result.a21 == 0:
+        raise ConfigError("calibration matrix is singular (determinant is zero)")
+    return result
 
 
 def load_tray_scan_config(path: str | Path) -> TrayScanConfig:

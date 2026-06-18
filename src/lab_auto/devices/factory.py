@@ -1,7 +1,7 @@
 import platform
 from pathlib import Path
 
-from lab_auto.config import DevicesConfig, WorkflowConfig
+from lab_auto.config import DevicesConfig, WorkflowConfig, workflow_config_from_tray_scan
 from lab_auto.devices.dfield_camera import DFieldCamera
 from lab_auto.devices.light import PWM_MODBUS_READ_TIMEOUT_S, ManualLight, PwmModbusLight
 from lab_auto.devices.light_safety import validate_pwm_light_config
@@ -26,24 +26,6 @@ from lab_auto.workflow.tray_scan import TrayScanWorkflow
 
 def _path_exists(path: Path) -> bool:
     return Path(path).exists()
-
-
-def _scan_to_workflow_config(scan_config) -> WorkflowConfig:
-    """Adapt the per-point fields of a tray-scan config to a single-point config."""
-    return WorkflowConfig(
-        devices_config=scan_config.devices_config,
-        sample=scan_config.sample,
-        optics=scan_config.optics,
-        acquisition=scan_config.acquisition,
-        output=scan_config.output,
-    )
-
-
-def _unwired_mask_provider(wafer):
-    raise DeviceError(
-        "tray-scan mask provider is not wired: inject a recognition hook "
-        "(camera capture + sample recognition) via create_tray_scan_workflow(mask_provider=...)"
-    )
 
 
 class RamanPointMeasurer:
@@ -225,10 +207,15 @@ class DeviceFactory:
     def create_tray_scan_workflow(self, scan_config, devices_config: DevicesConfig, *, mask_provider=None):
         """Compose a real tray-scan workflow.
 
-        The per-point measurement reuses the single-point Raman primitive; the
-        ``mask_provider`` (camera capture + recognition) is injected by the
-        recognition integration and is required for a real run.
+        The per-point measurement reuses the single-point Raman primitive. A real
+        ``mask_provider`` (camera capture + recognition hook) is required and must
+        be supplied before any device is opened or the stage is moved.
         """
+        if mask_provider is None:
+            raise DeviceError(
+                "real tray scan requires a recognition mask provider "
+                "(camera capture + sample recognition); none is wired yet"
+            )
         light = self.create_light(devices_config)
         stage = None
         spectrometer = None
@@ -237,11 +224,10 @@ class DeviceFactory:
             stage = self.create_stage(devices_config)
             spectrometer = self.create_spectrometer(devices_config)
             camera = self.create_camera(devices_config)
-            workflow_config = _scan_to_workflow_config(scan_config)
+            workflow_config = workflow_config_from_tray_scan(scan_config)
             raman = RamanWorkflow.real(workflow_config, stage=stage, spectrometer=spectrometer, camera=camera, light=light)
             measurer = RamanPointMeasurer(raman)
-            provider = mask_provider if mask_provider is not None else _unwired_mask_provider
-            return TrayScanWorkflow.real(scan_config, stage=stage, point_measurer=measurer, mask_provider=provider)
+            return TrayScanWorkflow.real(scan_config, stage=stage, point_measurer=measurer, mask_provider=mask_provider)
         except Exception:
             for device in (camera, spectrometer, stage, light):
                 if device is not None:

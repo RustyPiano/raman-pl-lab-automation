@@ -27,11 +27,13 @@ output:
   formats: [csv, json]
 
 # Sample-tray grid (wafer centers from known geometry). Set on hardware.
+# Placeholder pitch/offset keep every wafer center inside the example device
+# soft limits (configs/devices.example.yaml, +/-5000 um); widen on hardware.
 tray:
   rows: 2
-  cols: 3
-  pitch_x_um: 10000
-  pitch_y_um: 10000
+  cols: 2
+  pitch_x_um: 2000
+  pitch_y_um: 2000
   first_cell_offset_x_um: 0
   first_cell_offset_y_um: 0
   order: serpentine  # row_major | serpentine

@@ -25,10 +25,10 @@ def _fmt(x: float, y: float) -> str:
     return f"{x:.3f},{y:.3f}"
 
 
-def simulated_mask_provider(center_px: float = 0.0, center_py: float = 0.0):
+def simulated_mask_provider():
     """A deterministic mask provider for dry-run/preview.
 
-    Returns a single 3x3 foreground blob so ``plan()`` previews the full
+    Returns a single foreground blob so ``plan()`` previews the full
     per-center / per-point sequence without any recognition code or hardware.
     """
 
