@@ -149,7 +149,8 @@ light:
 
 - 新增 `src/lab_auto/workflow/tray_scan.py` + `ramanctl scan`（命名待定，避免与仪器 mapping 混淆）。复用现有单点工作流（M1 光源 + 减背景时序）做底层"测一个点"。
 - **硬前置**：X/Y 轴 `homed`/`user_zeroed`（spec §12.1）；每个目标点在软限位内，越界 skip-或-abort。复用现有 stage 状态机与软限位。
-- **每样品中心的采集模式（已定）**：中心 + **参数化图案的 2 个周围点** = 3 个空间点；**每点单点 Raman 重复 2 次**（防误差/防烧样）= 每中心 6 次采集。周围点图案参数化（点数/距离/方向可配，默认 2 点）。
+- **每样品中心的采集模式（已定）**：中心 + **参数化图案的 2 个周围点** = 3 个空间点；**每点单点 Raman 测 2 次**= 每中心 6 次采集。周围点图案参数化（点数/距离/方向可配，默认 2 点）。
+- **两次采集 = 烧样检查（已定）**：同一点的两次谱必须**互相比较**——偏差超阈值即判为烧样/异常并在 manifest 标记（不是简单平均）。两次谱都留档；比较指标与阈值待定（如相对强度差、峰位漂移）。
 - **坐标系（已定，且因"图像中心=原点"而简化）**：CCD 在晶片中心拍照，所以**图像中心 = 拍照时位移台当前位置**。样品中心相对图像中心的像素偏移 → 像素↔位移台仿射标定 → 即从当前位置出发的相对移动量。测量点假设就在图像中心（= 激光斑，待确认）。标定随物镜倍率变化，按当前倍率取。
 - **晶片中心定位（已定）**：样品盘是**已知几何的规则阵列**（行列 + 间距），home 后按格子偏移依次到各晶片中心；不靠逐片识别定位。
 - **中心提取是我们的算法（已定）**：冯博士只给识别后的图像/掩码，**从掩码算样品中心由我们实现**（连通域/轮廓 → 质心），数据格式完全我们定。待确认掩码的具体形式（二值 mask / 标签图 / 画框），先按二值/标签 mask 开发。
@@ -157,7 +158,7 @@ light:
   - `SampleCenter{ pixel_x, pixel_y, label?, area? }`（从掩码提取）
   - `Calibration{ objective, affine 2x2(像素→um，含旋转/各向异性), image_center_px/py }`
   - `TrayLayout{ rows, cols, pitch_um{x,y}, first_cell_offset_um{x,y}, order(行优先/蛇形) }`
-  - `ScanPattern{ repeats_per_point=2, surrounding{ count=2, distance_um, angles/layout } }`
+  - `ScanPattern{ repeats_per_point=2, burn_check{ metric, threshold }, surrounding{ count=2, distance_um, angles/layout } }`
 - **输出**：每个采集点一个目录（复用单点输出）+ 分层 manifest（晶片 → 样品中心 → 各点：像素/位移台坐标、重复次数、状态、路径）。可中断/可恢复/可审计（spec §17）。默认 csv/json；与 MAPS `.tdms` 是否互通待定（§5）。
 - **可立刻开发/测试（纯逻辑，macOS）**：掩码→中心提取、像素→位移台仿射换算、样品盘几何→晶片中心偏移、扫描点图案生成、嵌套扫描编排（注入 fake stage/光源/相机 + dry-run）、manifest。**要上机（推迟）**：真实标定采数、激光斑像素确认、各物镜标定、真实 CCD 整片成像。
 - **新依赖待定**：掩码连通域/质心提取可能需要 `numpy`（整片 CCD 图像较大，纯 stdlib 偏慢）；引入前需确认（当前项目仅 stdlib + pyyaml + pyserial + pytest）。
