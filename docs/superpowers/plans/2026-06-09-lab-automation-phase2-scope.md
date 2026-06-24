@@ -1,18 +1,18 @@
 # Lab Automation Phase 2 Scope & Sequencing Plan
 
-> **Status (2026-06-18): Phase 2 M1 + M2 code-complete, pending on-hardware acceptance.**
-> Phase 1 MVP is code-complete and merged to `main` (`36518da`, `caa3429`).
-> Phase 2 M1 (PWM Modbus light backend) and M2 (tray→wafer→sample layered scan)
-> are both implemented and merged to `main`; **350 tests pass locally**. M2's
-> per-task TDD plan and final state live in
-> [`2026-06-18-phase2-m2-tray-scan.md`](2026-06-18-phase2-m2-tray-scan.md).
-> The only outstanding Phase 1/M1/M2 gates are the
-> on-hardware acceptance runs in
-> [`docs/phase1-hardware-acceptance.md`](../../phase1-hardware-acceptance.md)
-> and [`docs/phase2-hardware-acceptance.md`](../../phase2-hardware-acceptance.md),
-> deliberately deferred until the lab Windows machine is available. This
-> document now tracks the remaining Phase 2 milestones and the open questions
-> that must be answered before any **real-hardware** action ships.
+> **Status (2026-06-24): Phase 1 + Phase 2 M1 hardware-ACCEPTED on the lab machine; M2 code-complete, pending its on-hardware bring-up.**
+> Phase 1 MVP and Phase 2 M1 (PWM Modbus light backend) passed real-hardware
+> acceptance on 2026-06-24 — single-point Raman ran end-to-end, the PWM
+> mismatch interlock fired on real hardware, 355 tests green on Python 3.13
+> 64-bit. Evidence: [`docs/hardware-acceptance-report-20260624.md`](../../hardware-acceptance-report-20260624.md).
+> Phase 2 M2 (tray→wafer→sample layered scan) is implemented and merged to
+> `main` (per-task plan + state in
+> [`2026-06-18-phase2-m2-tray-scan.md`](2026-06-18-phase2-m2-tray-scan.md)) but
+> its hardware bring-up still needs tray geometry, per-objective calibration,
+> the recognition mask hook, and possibly the newly-found COM5/COM16 subsystems
+> (see §5.13–15). Acceptance status/criteria:
+> [`docs/phase1-hardware-acceptance.md`](../../phase1-hardware-acceptance.md),
+> [`docs/phase2-hardware-acceptance.md`](../../phase2-hardware-acceptance.md).
 
 **Source spec:** [`docs/superpowers/specs/2026-06-04-lab-automation-platform-design.md`](../specs/2026-06-04-lab-automation-platform-design.md)
 （光源协议 §6.5；安全状态机 §12.2/§12.3；Phase 2 候选范围 §15；风险/待确认 §16；Agent 约束 §17）
@@ -200,6 +200,16 @@ light:
 10. **扫描输出格式**：默认 csv/json；是否需与 MAPS `.tdms` 互通待定。
 11. **HTTP 后端（阻塞 M6）**：厂家 API 端口、命令字符串、状态读取能力、错误返回格式。
 12. **现场核对**：MAPS 当前电脑的串口号、DLL 路径、光源控制方式与本仓库假设是否一致。
+
+### 2026-06-24 真机首测的更新（部分 §5 已闭环，新增 3 个子系统）
+
+首次上机后，上面几条已确认（详见 `docs/hardware-acceptance-report-20260624.md`、`docs/phase2-hardware-acceptance.md`）：§5.1 PWM 通道实测 `led=CH1(1000Hz/5%)`、`laser=CH2(10000Hz/100%)`、COM15、station 1，联锁真机生效；§5.2 功率半波片在 **COM17**（旧代码 `lasermove.py`）；§5.12 COM/DLL 路径已抄录。仍未闭环：§5.3/§5.4/§5.6/§5.7（标定、分辨率、激光斑=图像中心、盘几何，均待 M2 上机现场采）。
+
+真机还发现 **3 个本仓库尚未建模的串口子系统**，后续要纳入：
+
+13. **物镜转盘切换（COM5, 115200, 旧代码 `lenschange.py`）**：M2 标定按物镜倍率变化（§5.3），自动化多物镜流程需要程序切物镜。建议加 `objective` 适配器（切到指定物镜并回读确认），供 M2/标定调用。
+14. **光路激光/LED 切换（COM16, 旧代码 `changelight.py`）⚠️阻塞 M2**：独立于 PWM 开关的"激光/LED 选择"。**待确认：M2"先 LED 拍整片图 → 再激光逐点测"是否必须在两者间切 COM16？** 单点流程只用激光、仅靠 PWM 即跑通（光路本就在激光位）；但 M2 反复在成像/测量间切换，很可能需把 COM16 接进光源控制（对应工程师说的 Image/测试模式）。确认后决定是否新增"光路选择"适配器并接入 M2 编排。
+15. **半波片激光功率（COM17, 旧代码 `lasermove.py`）**：即 §5.2 的功率控制，现已定位到 COM17。后续做独立 `set_power_mw()` 适配器（按物镜 Pmin/Pmax 限幅），不映射 PWM duty。
 
 ---
 

@@ -180,6 +180,16 @@ def test_ensure_voltage_setpoint_writes_when_all_off():
     assert slave.registers[mb.VOLTAGE_REGISTER] == 50
 
 
+def test_ensure_voltage_setpoint_refuses_on_reg1_readback_mismatch():
+    # Reg1 (0x0032 = 5.0 V) must be confirmed by read-back, not just written.
+    regs = _healthy_registers()
+    regs[mb.VOLTAGE_REGISTER] = 0
+    slave = FakeModbusSlave(registers=regs, ignore_writes_to={mb.VOLTAGE_REGISTER})
+    light = _adapter(slave)
+    with pytest.raises(DeviceError):
+        light.ensure_voltage_setpoint()
+
+
 # --- LED isolation -----------------------------------------------------
 
 def test_led_on_sets_led_state_only():

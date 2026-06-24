@@ -1,5 +1,22 @@
 # Phase 2 · M1 PWM Light Backend — Hardware Acceptance
 
+> **Result (2026-06-24): PASSED in substance on the lab Windows machine.** PWM
+> controller on **COM15**, station_id 1; `led`=CH1 (1000 Hz / 5 %), `laser`=CH2
+> (**10000 Hz / 100 %** — real values differ from the example, found via the
+> read-back interlock). The frequency/duty-mismatch interlock **fired on real
+> hardware** (refused laser-on at 1000 Hz/5 % vs actual 10000 Hz/100 %, then
+> allowed it after the config was corrected to the read-back values). Single-point
+> workflow toggled the laser via PWM end-to-end. Two checks were not run
+> standalone this session and remain for the next session (both are already
+> implemented and unit-tested): the explicit `Reg1`=`0x0032` read-back, and the
+> all-channels-off read-back on close. Full evidence:
+> [`hardware-acceptance-report-20260624.md`](hardware-acceptance-report-20260624.md).
+>
+> **Newly discovered subsystems (not yet modeled):** objective turret (COM5,
+> `lenschange.py`), laser/LED light-path switch (COM16, `changelight.py`), and
+> half-wave-plate laser power (COM17, `lasermove.py`). See the M2 section and
+> `docs/superpowers/plans/2026-06-09-lab-automation-phase2-scope.md` §4.
+
 Run on the Windows 64-bit lab computer only, after the development work is complete.
 This gate is intentionally deferred until then, consistent with Phase 1.
 
@@ -20,6 +37,20 @@ This gate is intentionally deferred until then, consistent with Phase 1.
 ramanctl devices doctor --config configs/devices.real.yaml --real
 ramanctl workflow single --config configs/single_point.yaml --devices-config configs/devices.real.yaml --real --yes
 ```
+
+### Standalone checks to run next session (close the 2026-06-24 gaps)
+
+The 2026-06-24 run exercised these only implicitly through `workflow single`.
+Both behaviours are implemented and unit-tested (`ensure_voltage_setpoint`
+read-back, `_all_off` read-back); verify them explicitly on hardware:
+
+- **`Reg1` read-back:** before opening any channel, confirm `Reg1` reads decimal
+  `50` (`0x0032`). The adapter writes Reg1 only when all channels read off, then
+  re-reads it and aborts on mismatch (`test_ensure_voltage_setpoint_*`).
+- **All-channels-off read-back on close:** after `laser_off` / `led_off` / any
+  failure path, confirm every configured channel's output-state register reads
+  back `0`; a read-back failure must drop to `manual_wait`
+  (`test_laser_off_*`).
 
 ## Pass Criteria (spec 6.5 / 12.2 / 12.3)
 

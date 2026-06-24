@@ -1,5 +1,14 @@
 # Phase 1 Hardware Acceptance
 
+> **Result (2026-06-24): PASSED on the lab Windows machine.** Stage (COM4),
+> Zolix spectrometer (DLL v24.5.0), DField camera (2048×264), and the full
+> single-point Raman workflow (background + sample + background-subtraction +
+> outputs) all ran on real hardware; 355/355 unit tests green on Python 3.13
+> 64-bit. Real COM/channel/DLL map and full evidence:
+> [`hardware-acceptance-report-20260624.md`](hardware-acceptance-report-20260624.md).
+> Stage `resolution_um=0.04` and `soft_limits_um` are still placeholder/old-code
+> values pending on-stage measurement.
+
 Run these commands on the Windows 64-bit lab computer only.
 
 ## Preflight
