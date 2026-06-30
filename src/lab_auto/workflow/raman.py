@@ -128,48 +128,107 @@ class RamanWorkflow:
         )
 
     def run_single_point(self, *, require_confirmation: bool) -> Path:
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print("🔬 开始单点光谱采集流程")
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+        print("\n[1/8] 验证配置参数...")
         self.validate_single_point_config()
+        print("✓ 配置验证通过")
+
         timestamp = datetime.now(timezone.utc)
         run_dir = self.config.output.directory / f"{timestamp.strftime('%Y%m%d-%H%M%S-%f')}-{self.config.sample.id}"
         run_dir.mkdir(parents=True, exist_ok=True)
+        print(f"✓ 输出目录: {run_dir}")
+
         laser_off_after_sample = False
         try:
+            print("\n[2/8] 配置光谱仪...")
+            print(f"  - 光栅: {self.config.optics.grating}")
+            print(f"  - 中心波长: {self.config.optics.center_wavelength_nm} nm")
+            print(f"  - 狭缝宽度: {self.config.optics.slit_width_um} μm")
             self._configure_spectrometer()
+            print("✓ 光谱仪配置完成")
+
             background_frame = None
             if self.config.acquisition.subtract_background:
+                print("\n[3/8] 采集背景光谱...")
+                print(f"  - 曝光时间: {self.config.acquisition.exposure_ms} ms")
+                print(f"  - 帧数: {self.config.acquisition.frames}")
                 self._confirm_laser_off(require_confirmation=require_confirmation or self.runtime_mode == "real")
+                print("  > 正在采集背景 (激光关闭)...")
                 background_frame = self.camera.capture(
                     read_mode=self.config.acquisition.read_mode,
                     exposure_ms=self.config.acquisition.exposure_ms,
                     gain=self.config.acquisition.gain,
                     frames=self.config.acquisition.frames,
                 )
+                print("✓ 背景采集完成")
+            else:
+                print("\n[3/8] 跳过背景采集 (未启用背景扣除)")
+
+            print("\n[4/8] 采集样品光谱...")
+            print(f"  - 曝光时间: {self.config.acquisition.exposure_ms} ms")
+            print(f"  - 帧数: {self.config.acquisition.frames}")
             self._confirm_laser_on(require_confirmation=require_confirmation or self.runtime_mode == "real")
+            print("  > 正在采集样品光谱 (激光开启)...")
             sample_frame = self.camera.capture(
                 read_mode=self.config.acquisition.read_mode,
                 exposure_ms=self.config.acquisition.exposure_ms,
                 gain=self.config.acquisition.gain,
                 frames=self.config.acquisition.frames,
             )
+            print("✓ 样品采集完成")
+
             if self.runtime_mode == "real":
                 self._confirm_laser_off(require_confirmation=require_confirmation or self.runtime_mode == "real")
                 laser_off_after_sample = True
+                print("✓ 激光已关闭")
+
+            print("\n[5/8] 处理光谱数据...")
             background = self._frame_to_spectrum(background_frame) if background_frame is not None else None
             raw = self._frame_to_spectrum(sample_frame)
             if background is not None and (raw.x_axis_type == "pixel_index" or background.x_axis_type == "pixel_index"):
                 background = self._as_pixel_index(background)
                 raw = self._as_pixel_index(raw)
+            print("✓ 光谱数据处理完成")
+
+            print("\n[6/8] 背景扣除...")
             corrected = subtract_background(raw, background) if background is not None else None
+            if corrected is not None:
+                print("✓ 背景扣除完成")
+            else:
+                print("⊘ 未执行背景扣除")
+
             warnings = list(
                 dict.fromkeys((background.metadata.get("warnings", []) if background is not None else []) + raw.metadata.get("warnings", []))
             )
+
+            print("\n[7/8] 保存数据文件...")
             self._write_raw(run_dir / "raw.csv", raw)
+            print("  ✓ raw.csv")
             if background is not None and corrected is not None:
                 self._write_background(run_dir / "background.csv", background)
+                print("  ✓ background.csv")
                 self._write_corrected(run_dir / "corrected.csv", corrected)
+                print("  ✓ corrected.csv")
             self._write_metadata(run_dir / "metadata.json", timestamp=timestamp, raw=raw, sample_frame=sample_frame, warnings=warnings)
+            print("  ✓ metadata.json")
+
+            print("\n[8/8] 记录运行日志...")
             append_run_log(run_dir / "run.log", "single_point_complete")
+            print("✓ 运行日志已记录")
+
+            print("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            print("✅ 单点光谱采集完成!")
+            if warnings:
+                print("\n⚠️  警告信息:")
+                for w in warnings:
+                    print(f"  - {w}")
+            print(f"\n📁 数据已保存至: {run_dir}")
+            print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
         except Exception:
+            print("\n❌ 采集过程出错!")
             if not laser_off_after_sample:
                 self._confirm_laser_off_after_failure(require_confirmation=require_confirmation or self.runtime_mode == "real")
             raise
