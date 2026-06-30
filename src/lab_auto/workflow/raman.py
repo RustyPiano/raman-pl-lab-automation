@@ -5,12 +5,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from lab_auto.config import WorkflowConfig
+from lab_auto.devices.base import close_all_quietly
 from lab_auto.devices.dfield_validation import validate_dfield_capture_args
 from lab_auto.devices.optics_validation import validate_zolix_optics
 from lab_auto.devices.light import ManualLight
 from lab_auto.devices.simulated import SimulatedCamera, SimulatedSpectrometer
 from lab_auto.devices.zolix_spectrometer import direct_to_front_bool
-from lab_auto.errors import ConfigError
+from lab_auto.errors import ConfigError, SafetyError
 from lab_auto.logging import append_run_log
 from lab_auto.processing.background import subtract_background
 from lab_auto.workflow.data import CaptureFrame, SpectrumData
@@ -40,10 +41,7 @@ class RamanWorkflow:
         return workflow
 
     def close(self) -> None:
-        for device in (getattr(self, "stage", None), self.spectrometer, self.camera, self.light):
-            close = getattr(device, "close", None)
-            if close is not None:
-                close()
+        close_all_quietly((getattr(self, "stage", None), self.spectrometer, self.camera, self.light))
 
     def measure_single_point(self, *, require_confirmation: bool) -> list[str]:
         self.validate_single_point_config()
@@ -245,8 +243,13 @@ class RamanWorkflow:
     def _confirm_laser_off_after_failure(self, *, require_confirmation: bool) -> None:
         try:
             self._confirm_laser_off(require_confirmation=require_confirmation)
-        except Exception:
-            pass
+        except Exception as exc:
+            # On real hardware a failed emergency laser-off is more urgent than the
+            # error we're already handling: escalate to SafetyError (the original
+            # exception is preserved as __context__) so the operator knows the laser
+            # may still be ON. Dry-run/simulated has nothing physical to make safe.
+            if self.runtime_mode == "real":
+                raise SafetyError("laser-off could not be confirmed after a failure; laser may still be ON") from exc
 
     def _configure_spectrometer(self) -> None:
         initialize = getattr(self.spectrometer, "initialize", None)

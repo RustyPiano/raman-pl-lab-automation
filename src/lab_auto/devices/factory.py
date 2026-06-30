@@ -2,6 +2,7 @@ import platform
 from pathlib import Path
 
 from lab_auto.config import DevicesConfig, WorkflowConfig, workflow_config_from_tray_scan
+from lab_auto.devices.base import close_all_quietly
 from lab_auto.devices.dfield_camera import DFieldCamera
 from lab_auto.devices.light import PWM_MODBUS_READ_TIMEOUT_S, ManualLight, PwmModbusLight
 from lab_auto.devices.light_safety import validate_pwm_light_config
@@ -229,11 +230,7 @@ class DeviceFactory:
             measurer = RamanPointMeasurer(raman)
             return TrayScanWorkflow.real(scan_config, stage=stage, point_measurer=measurer, mask_provider=mask_provider)
         except Exception:
-            for device in (camera, spectrometer, stage, light):
-                if device is not None:
-                    close = getattr(device, "close", None)
-                    if close is not None:
-                        close()
+            close_all_quietly((camera, spectrometer, stage, light))
             raise
 
     def create_single_point_workflow(self, workflow_config: WorkflowConfig, devices_config: DevicesConfig):
@@ -253,9 +250,5 @@ class DeviceFactory:
                 light=light,
             )
         except Exception:
-            for device in (camera, spectrometer, stage, light):
-                if device is not None:
-                    close = getattr(device, "close", None)
-                    if close is not None:
-                        close()
+            close_all_quietly((camera, spectrometer, stage, light))
             raise

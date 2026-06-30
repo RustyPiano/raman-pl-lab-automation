@@ -1,5 +1,6 @@
 import pytest
 
+from lab_auto.errors import ConfigError
 from lab_auto.processing.burn_check import compare_spectra
 
 
@@ -36,13 +37,18 @@ def test_deviation_is_relative_l2():
 
 
 def test_length_mismatch_raises():
-    with pytest.raises(ValueError):
+    with pytest.raises(ConfigError):
         compare_spectra([1.0, 2.0], [1.0], metric="relative_l2", threshold=0.1)
 
 
 def test_unknown_metric_raises():
-    with pytest.raises(ValueError):
+    with pytest.raises(ConfigError):
         compare_spectra([1.0], [1.0], metric="cosine", threshold=0.1)
+
+
+def test_empty_spectra_raises():
+    with pytest.raises(ConfigError):
+        compare_spectra([], [], metric="relative_l2", threshold=0.1)
 
 
 def test_threshold_boundary_is_not_burned():

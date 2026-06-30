@@ -15,7 +15,7 @@ from lab_auto.config import (
     TrayScanConfig,
 )
 from lab_auto.devices.waynelabs_stage import AxisState
-from lab_auto.errors import SafetyError
+from lab_auto.errors import ConfigError, SafetyError
 from lab_auto.scan.pattern import measurement_points
 from lab_auto.scan.tray import wafer_centers
 from lab_auto.vision.calibration import pixel_to_stage_delta
@@ -303,3 +303,116 @@ def test_burn_check_considers_all_repeats(tmp_path):
     assert len(measurer.calls) == 3
     point = manifest["wafers"][0]["centers"][0]["points"][0]
     assert point["burn"]["burned"] is True
+
+
+# --- audit-fix regression tests ----------------------------------------
+
+def _calib_sized(w, h):
+    return Calibration(objective="x", a11=1.0, a12=0.0, a21=0.0, a22=1.0,
+                       image_center_px=2.0, image_center_py=2.0, image_width_px=w, image_height_px=h)
+
+
+def _single_point_pattern():
+    return ScanPattern(repeats_per_point=2, burn_metric="relative_l2", burn_threshold=0.5,
+                       surrounding_count=0, surrounding_distance_um=10.0, surrounding_angles_deg=[])
+
+
+def test_dry_run_plan_ignores_size_guard(tmp_path):
+    # plan()/dry-run uses the 3x3 simulated mask and never drives the stage, so a
+    # sized calibration must NOT make the size guard fire during preview.
+    from lab_auto.workflow.tray_scan import simulated_mask_provider
+
+    cfg = _config(tray=_tray_1x1(), pattern=_single_point_pattern(), calibration=_calib_sized(640, 480), output_dir=tmp_path)
+    wf = TrayScanWorkflow.dry_run(cfg, mask_provider=simulated_mask_provider())
+    actions = wf.plan()  # must not raise SafetyError
+    assert any(a.startswith("move_wafer:") for a in actions)
+
+
+def test_mask_size_mismatch_refuses_to_drive_laser(tmp_path):
+    # ONE_BLOB is 5x5; a calibration declaring 5x5 accepts it, a 3x3 mask is refused.
+    cfg = _config(tray=_tray_1x1(), pattern=_single_point_pattern(), calibration=_calib_sized(5, 5), output_dir=tmp_path)
+    wf = TrayScanWorkflow.real(cfg, stage=_homed_stage(), point_measurer=FakeMeasurer(lambda r, n: [1.0]),
+                               mask_provider=lambda w: [[0, 1, 0], [0, 1, 0], [0, 0, 0]])  # 3x3
+    with pytest.raises(SafetyError):
+        wf.run(require_confirmation=False)
+
+
+def test_mask_size_match_is_accepted(tmp_path):
+    cfg = _config(tray=_tray_1x1(), pattern=_single_point_pattern(), calibration=_calib_sized(5, 5), output_dir=tmp_path)
+    wf = TrayScanWorkflow.real(cfg, stage=_homed_stage(), point_measurer=FakeMeasurer(lambda r, n: [1.0]),
+                               mask_provider=lambda w: ONE_BLOB)  # 5x5
+    manifest = wf.run(require_confirmation=False)
+    assert manifest["wafers"][0]["status"] == "done"
+
+
+def test_empty_mask_flags_no_centers_and_resume_retries(tmp_path):
+    cfg = _config(tray=_tray_1x1(), pattern=_single_point_pattern(), calibration=_calib(), output_dir=tmp_path)
+    calls = {"n": 0}
+
+    def provider(wafer):
+        calls["n"] += 1
+        return [[0, 0, 0], [0, 0, 0], [0, 0, 0]]
+
+    wf = TrayScanWorkflow.real(cfg, stage=_homed_stage(), point_measurer=FakeMeasurer(lambda r, n: [1.0]), mask_provider=provider)
+    manifest = wf.run(require_confirmation=False)
+    assert manifest["wafers"][0]["status"] == "no_centers"  # NOT "done"
+
+    # resume must re-attempt (not silently skip a non-done wafer)
+    wf2 = TrayScanWorkflow.real(cfg, stage=_homed_stage(), point_measurer=FakeMeasurer(lambda r, n: [1.0]), mask_provider=provider)
+    wf2.run(require_confirmation=False)
+    assert calls["n"] == 2
+
+
+def test_resume_reuses_persisted_centers_ignoring_new_mask(tmp_path):
+    cfg = _config(tray=_tray_1x1(), pattern=_single_point_pattern(), calibration=_calib(), output_dir=tmp_path)
+    wafer = wafer_centers(cfg.tray)[0]
+    # Seed a partially-done manifest: one detected center, no points measured yet.
+    (tmp_path / "manifest.json").write_text(json.dumps({
+        "sample_id": cfg.sample.id, "operator": cfg.sample.operator, "runtime_mode": "real",
+        "wafers": [{
+            "index": 0, "row": wafer.row, "col": wafer.col, "x_um": wafer.x_um, "y_um": wafer.y_um,
+            "centers": [{"label": 1, "pixel_x": 0.5, "pixel_y": 0.5, "area": 4,
+                         "stage_x_um": 0.0, "stage_y_um": 0.0, "points": []}],
+        }],
+    }))
+    calls = {"n": 0}
+
+    def provider(wafer):  # a DIFFERENT mask (two blobs) — must be ignored on resume
+        calls["n"] += 1
+        return TWO_BLOBS
+
+    wf = TrayScanWorkflow.real(cfg, stage=_homed_stage(), point_measurer=FakeMeasurer(lambda r, n: [1.0]), mask_provider=provider)
+    manifest = wf.run(require_confirmation=False)
+    assert calls["n"] == 0  # persisted centers reused; recognition NOT re-run
+    assert len(manifest["wafers"][0]["centers"]) == 1  # the persisted single center, not two
+
+
+def test_corrupt_manifest_raises_config_error(tmp_path):
+    (tmp_path / "manifest.json").write_text("{ not valid json")
+    cfg = _config(tray=_tray_1x1(), pattern=_single_point_pattern(), calibration=_calib(), output_dir=tmp_path)
+    wf = TrayScanWorkflow.real(cfg, stage=_homed_stage(), point_measurer=FakeMeasurer(lambda r, n: [1.0]), mask_provider=lambda w: ONE_BLOB)
+    with pytest.raises(ConfigError):
+        wf.run(require_confirmation=False)
+
+
+def test_config_fingerprint_mismatch_raises(tmp_path):
+    (tmp_path / "manifest.json").write_text(json.dumps({
+        "config_fingerprint": {"tray": ["totally", "different"]}, "wafers": [],
+    }))
+    cfg = _config(tray=_tray_1x1(), pattern=_single_point_pattern(), calibration=_calib(), output_dir=tmp_path)
+    wf = TrayScanWorkflow.real(cfg, stage=_homed_stage(), point_measurer=FakeMeasurer(lambda r, n: [1.0]), mask_provider=lambda w: ONE_BLOB)
+    with pytest.raises(ConfigError):
+        wf.run(require_confirmation=False)
+
+
+def test_fingerprint_includes_burn_threshold(tmp_path):
+    # Changing only burn_threshold must invalidate a resume (fingerprint covers it).
+    cfg = _config(tray=_tray_1x1(), pattern=_single_point_pattern(), calibration=_calib(), output_dir=tmp_path)
+    TrayScanWorkflow.real(cfg, stage=_homed_stage(), point_measurer=FakeMeasurer(lambda r, n: [1.0]),
+                          mask_provider=lambda w: ONE_BLOB).run(require_confirmation=False)
+    changed = ScanPattern(repeats_per_point=2, burn_metric="relative_l2", burn_threshold=0.99,
+                          surrounding_count=0, surrounding_distance_um=10.0, surrounding_angles_deg=[])
+    cfg2 = _config(tray=_tray_1x1(), pattern=changed, calibration=_calib(), output_dir=tmp_path)
+    wf2 = TrayScanWorkflow.real(cfg2, stage=_homed_stage(), point_measurer=FakeMeasurer(lambda r, n: [1.0]), mask_provider=lambda w: ONE_BLOB)
+    with pytest.raises(ConfigError):
+        wf2.run(require_confirmation=False)

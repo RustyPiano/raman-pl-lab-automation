@@ -75,3 +75,23 @@ def test_singular_calibration_matrix_rejected(tmp_path):
 def test_missing_file_raises():
     with pytest.raises(ConfigError):
         load_tray_scan_config(Path("configs/does_not_exist.yaml"))
+
+
+def test_negative_burn_threshold_rejected(tmp_path):
+    body = _valid_body().replace("burn_threshold: 0.1", "burn_threshold: -0.1")
+    with pytest.raises(ConfigError):
+        load_tray_scan_config(_write(tmp_path, body))
+
+
+def test_path_injecting_sample_id_rejected(tmp_path):
+    body = _valid_body().replace("id: tray-001", "id: ../../etc/evil")
+    with pytest.raises(ConfigError):
+        load_tray_scan_config(_write(tmp_path, body))
+
+
+def test_near_singular_calibration_rejected(tmp_path):
+    # a11=0.5,a22=0.5,a12/a21=0 -> det 0.25; nudge to make det ~1e-13 (near-singular)
+    body = _valid_body().replace("a11: 0.5", "a11: 2e-13").replace("a22: 0.5", "a22: 1.0")
+    body = body.replace("a12: 0.0", "a12: 0.0").replace("a21: 0.0", "a21: 0.0")
+    with pytest.raises(ConfigError):
+        load_tray_scan_config(_write(tmp_path, body))

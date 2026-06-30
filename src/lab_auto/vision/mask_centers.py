@@ -24,8 +24,15 @@ class SampleCenter:
 
 
 def _validate(mask):
+    if not isinstance(mask, (list, tuple)):
+        raise ConfigError("mask must be a 2D list/tuple grid")
     if not mask:
         return 0, 0
+    # Rows must be sequences but NOT str/bytes: a string row passes len() and its
+    # chars compare != 0, silently reading the whole row as foreground.
+    for row in mask:
+        if not isinstance(row, (list, tuple)):
+            raise ConfigError("mask rows must be lists/tuples of numbers")
     width = len(mask[0])
     for row in mask:
         if len(row) != width:

@@ -209,3 +209,20 @@ def test_parse_write_ack_rejects_bad_echo():
     frame = body + crc16(body)
     with pytest.raises(ProtocolError):
         parse_write_ack(frame, station=1, function=WRITE_SINGLE, address=17, value=1)
+
+
+def test_voltage_non_finite_rejected():
+    with pytest.raises(ProtocolError):
+        voltage_to_register(float("nan"))
+
+
+def test_write_multiple_non_int_value_is_protocol_error():
+    # a non-int targeting the voltage register must surface as ProtocolError, not
+    # a raw TypeError from the cap comparison running before validation.
+    with pytest.raises(ProtocolError):
+        build_write_multiple_request(station=1, address=1, values=[None])
+
+
+def test_write_multiple_too_many_registers_rejected():
+    with pytest.raises(ProtocolError):
+        build_write_multiple_request(station=1, address=2, values=[0] * 124)

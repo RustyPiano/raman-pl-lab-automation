@@ -88,6 +88,13 @@ class PwmModbusLight:
         return {"laser_state": self.laser_state, "led_state": self.led_state}
 
     def close(self) -> None:
+        # Safety net: force every channel off before dropping the transport, so a
+        # failure path that left the laser on gets one last chance to turn it off.
+        if not self.dry_run:
+            try:
+                self._all_off()
+            except Exception:  # noqa: BLE001 - teardown must never be blocked
+                pass
         close = getattr(self.transport, "close", None)
         if close is not None:
             close()
@@ -131,7 +138,16 @@ class PwmModbusLight:
         self.led_state = "off_confirmed"
 
     def ensure_voltage_setpoint(self) -> None:
-        """Guarded Reg1 write: only when every channel reads back off."""
+        """Guarded Reg1 write: only when every channel reads back off.
+
+        One-time SETUP step: establishes the laser voltage setpoint that every
+        ``laser_on``/``led_on`` later re-verifies via ``_verify_voltage``. It is
+        intentionally NOT auto-called on the per-shot enable path (that path only
+        verifies, never writes), so the operator/setup must call this once before
+        laser use. TODO(hardware): confirm where Reg1 is established on the real
+        controller — if it isn't persisted across power cycles, wire this into the
+        bring-up sequence.
+        """
         if self.dry_run:
             return
         states = self._read(output_state_register(1), 5)
@@ -186,16 +202,26 @@ class PwmModbusLight:
                 f"channel {channel.channel} duty mismatch (read {duty}, config {expected})"
             )
 
-    def _all_off(self) -> set[str]:
-        failures: set[str] = set()
-        for name, channel in (self.config.channels or {}).items():
-            register = output_state_register(channel.channel)
+    # The controller has 5 PWM output-state registers.
+    _ALL_CHANNELS = (1, 2, 3, 4, 5)
+
+    def _all_off(self) -> set[int]:
+        # Drive EVERY physical channel off (so an energized unconfigured channel
+        # can't stay on while we report the laser OFF), but only a CONFIGURED
+        # channel's failed read-back counts as a confirmation failure. Unconfigured
+        # channels (3-5 are unwired on this rig) must not false-alarm the validated
+        # laser-off interlock into manual_wait.
+        configured = {ch.channel for ch in (self.config.channels or {}).values()}
+        failures: set[int] = set()
+        for channel in self._ALL_CHANNELS:
+            register = output_state_register(channel)
             try:
                 self._write_single(register, 0)
-                if self._read(register, 1)[0] != 0:
-                    failures.add(name)
+                confirmed = self._read(register, 1)[0] == 0
             except DeviceError:
-                failures.add(name)
+                confirmed = False
+            if not confirmed and channel in configured:
+                failures.add(channel)
         return failures
 
     def _read(self, address: int, count: int) -> list[int]:

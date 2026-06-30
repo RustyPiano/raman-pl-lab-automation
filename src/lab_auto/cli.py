@@ -421,7 +421,9 @@ def main(argv: Sequence[str] | None = None, *, factory: DeviceFactory | None = N
                 return _print_dry_run("camera_temperature")
             if args.command == "capture":
                 return _print_dry_run(f"camera_capture:mode={args.mode}:out={args.out}")
-    except (ConfigError, DeviceError, SafetyError, OSError, AttributeError) as exc:
+    except (ConfigError, DeviceError, SafetyError, OSError) as exc:
+        # AttributeError is intentionally NOT caught: it signals a programming bug
+        # (typo/missing attr), and swallowing it as "error: ..." hides real defects.
         print(f"error: {exc}")
         return 2
     parser.error("unsupported command")

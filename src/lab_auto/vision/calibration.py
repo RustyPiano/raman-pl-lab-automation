@@ -7,6 +7,8 @@ move producing shift ``(c - p)`` is ``S = A*(c - p)`` with ``A = B^-1``
 (um-per-pixel). ``A`` captures scale, rotation, anisotropy and axis sign.
 """
 
+import math
+
 from lab_auto.config import Calibration
 from lab_auto.errors import ConfigError
 
@@ -15,8 +17,11 @@ def mat_inverse_2x2(m):
     """Inverse of a 2x2 matrix (list/tuple of two 2-rows). Singular -> ConfigError."""
     (a, b), (c, d) = m[0], m[1]
     det = a * d - b * c
-    if det == 0:
-        raise ConfigError("calibration matrix is singular (non-invertible)")
+    # Reject exact AND near-singular (relative to matrix scale): a tiny determinant
+    # blows up um/pixel coefficients and would drive the stage/laser wildly off.
+    scale = max(abs(a), abs(b), abs(c), abs(d), 1.0)
+    if not math.isfinite(det) or abs(det) <= 1e-12 * scale * scale:
+        raise ConfigError("calibration matrix is singular or near-singular (non-invertible)")
     inv_det = 1.0 / det
     return [
         [d * inv_det, -b * inv_det],
@@ -49,6 +54,8 @@ def fit_affine(samples):
     for stage_delta, pixel_delta in samples:
         sx, sy = float(stage_delta[0]), float(stage_delta[1])
         px, py = float(pixel_delta[0]), float(pixel_delta[1])
+        if not all(math.isfinite(v) for v in (sx, sy, px, py)):
+            raise ConfigError("calibration samples must be finite")
         ps[0][0] += px * sx
         ps[0][1] += px * sy
         ps[1][0] += py * sx

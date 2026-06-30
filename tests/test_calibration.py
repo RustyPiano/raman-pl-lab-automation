@@ -77,3 +77,19 @@ def test_pixel_to_stage_delta_applies_A_to_center_minus_pixel():
 def test_mat_inverse_singular_raises():
     with pytest.raises(ConfigError):
         mat_inverse_2x2([[1.0, 2.0], [2.0, 4.0]])
+
+
+def test_near_singular_matrix_rejected():
+    # tiny determinant relative to scale -> rejected (would blow up um/pixel coeffs)
+    with pytest.raises(ConfigError):
+        mat_inverse_2x2([[1.0, 1.0], [1.0, 1.0 + 1e-15]])
+
+
+def test_non_finite_matrix_rejected():
+    with pytest.raises(ConfigError):
+        mat_inverse_2x2([[float("inf"), 0.0], [0.0, 1.0]])
+
+
+def test_fit_affine_rejects_non_finite_samples():
+    with pytest.raises(ConfigError):
+        fit_affine([((1.0, 0.0), (float("nan"), 0.0)), ((0.0, 1.0), (0.0, 1.0))])

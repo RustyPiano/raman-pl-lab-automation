@@ -8,15 +8,17 @@ scan pattern, burn check). Writes an interruptible/resumable manifest.
 """
 
 import json
+import math
+import os
 from dataclasses import dataclass
 
 from lab_auto.config import TrayScanConfig
-from lab_auto.errors import SafetyError
+from lab_auto.errors import ConfigError, SafetyError
 from lab_auto.processing.burn_check import compare_spectra
 from lab_auto.scan.pattern import measurement_points
 from lab_auto.scan.tray import wafer_centers
 from lab_auto.vision.calibration import pixel_to_stage_delta
-from lab_auto.vision.mask_centers import extract_centers
+from lab_auto.vision.mask_centers import SampleCenter, extract_centers
 
 _HOMED_STATES = ("homed", "user_zeroed")
 
@@ -67,9 +69,35 @@ class TrayScanWorkflow:
 
     # -- geometry helpers ------------------------------------------------
 
-    def _centers_for(self, wafer):
+    def _centers_for(self, wafer, *, verify_space: bool = False):
+        # verify_space only on the real-run path: plan()/dry-run uses the simulated
+        # 3x3 mask for preview and never drives the stage, so the size guard (which
+        # would reject that tiny mask under a sized calibration) must not fire there.
         mask = self.mask_provider(wafer)
+        if verify_space:
+            self._assert_mask_matches_calibration(mask)
         return extract_centers(mask, min_area=self.config.min_area)
+
+    def _assert_mask_matches_calibration(self, mask) -> None:
+        """Refuse a mask whose pixel space != the space the calibration was fit in.
+
+        Centroids come out in mask-pixel coordinates and are mapped to stage µm by
+        ``pixel_to_stage_delta`` using ``calibration.image_center``. If the mask is
+        a different resolution (e.g. the model resized the image), every centroid
+        maps to the wrong physical point and the laser is driven off-target. Only
+        enforceable when the calibration declares its capture size (opt-in).
+        """
+        calib = self.config.calibration
+        if calib.image_width_px is None or calib.image_height_px is None:
+            return  # pixel space not declared — recommend declaring it for real runs
+        height = len(mask)
+        width = len(mask[0]) if height else 0
+        if width != calib.image_width_px or height != calib.image_height_px:
+            raise SafetyError(
+                f"recognition mask is {width}x{height} but calibration declares "
+                f"{calib.image_width_px}x{calib.image_height_px}; centroids would map to the "
+                "wrong stage coordinates — refusing to drive the laser"
+            )
 
     def _sample_xy(self, wafer, center):
         dx, dy = pixel_to_stage_delta(self.config.calibration, (center.pixel_x, center.pixel_y))
@@ -110,6 +138,12 @@ class TrayScanWorkflow:
         return True
 
     def _move_to(self, x: float, y: float) -> None:
+        # Validate the WHOLE target before moving either axis: a bad Y must not
+        # leave X parked at a half-applied, unintended coordinate.
+        if not (math.isfinite(x) and math.isfinite(y)):
+            raise SafetyError(f"non-finite move target: {x},{y}")
+        if not self._within_limits(x, y):
+            raise SafetyError(f"move target out of soft limits: {_fmt(x, y)}")
         speed = self.stage.config.default_speed
         for axis, target in (("x", x), ("y", y)):
             delta = target - self.stage.ledger.position_um[axis]
@@ -129,7 +163,15 @@ class TrayScanWorkflow:
                 continue  # resume: don't re-image or re-drive a finished wafer
             wafer_entry = self._wafer_entry(manifest, wafer)
             self._move_to(wafer.x_um, wafer.y_um)
-            for center in self._centers_for(wafer):
+            centers = self._resume_or_detect_centers(wafer, wafer_entry, manifest_path, manifest)
+            if not centers:
+                # No centers: an empty wafer, or a recognition/handoff failure that
+                # returned a blank mask. Do NOT mark 'done' (that would silently skip
+                # it forever on resume) — flag it so a resume re-attempts it.
+                wafer_entry["status"] = "no_centers"
+                self._write_manifest(manifest_path, manifest)
+                continue
+            for center in centers:
                 sx, sy = self._sample_xy(wafer, center)
                 center_entry = self._center_entry(wafer_entry, center, sx, sy)
                 for x, y, role in measurement_points((sx, sy), self.config.pattern):
@@ -145,6 +187,26 @@ class TrayScanWorkflow:
             self._write_manifest(manifest_path, manifest)
         self._write_manifest(manifest_path, manifest)
         return manifest
+
+    def _resume_or_detect_centers(self, wafer, wafer_entry, manifest_path, manifest):
+        """Reuse persisted centers on resume; otherwise detect them once and persist.
+
+        Centers are persisted up front so a resumed run reuses the SAME labels.
+        Re-detecting would renumber labels from a slightly different mask and
+        corrupt the done-keys (re-measuring or skipping the wrong physical sample).
+        """
+        persisted = wafer_entry.get("centers")
+        if persisted:
+            return [
+                SampleCenter(pixel_x=c["pixel_x"], pixel_y=c["pixel_y"], area=c["area"], label=c["label"])
+                for c in persisted
+            ]
+        centers = self._centers_for(wafer, verify_space=True)
+        for center in centers:
+            sx, sy = self._sample_xy(wafer, center)
+            self._center_entry(wafer_entry, center, sx, sy)  # persist before measuring any point
+        self._write_manifest(manifest_path, manifest)
+        return centers
 
     def _measure_point(self, wafer, center, role, x, y, require_confirmation) -> dict:
         if not self._within_limits(x, y):
@@ -188,9 +250,38 @@ class TrayScanWorkflow:
 
     # -- manifest --------------------------------------------------------
 
+    def _config_fingerprint(self) -> dict:
+        """Identity of the geometry/calibration/pattern a manifest was produced under.
+
+        A resume that reused an output directory with a different tray/calibration/
+        pattern would skip or mix measurements taken at old coordinates.
+        """
+        c = self.config
+        return {
+            "tray": [c.tray.rows, c.tray.cols, c.tray.pitch_x_um, c.tray.pitch_y_um,
+                     c.tray.first_cell_offset_x_um, c.tray.first_cell_offset_y_um, c.tray.order],
+            "calibration": [c.calibration.a11, c.calibration.a12, c.calibration.a21, c.calibration.a22,
+                            c.calibration.image_center_px, c.calibration.image_center_py,
+                            c.calibration.image_width_px, c.calibration.image_height_px],
+            "pattern": [c.pattern.repeats_per_point, c.pattern.surrounding_count,
+                        c.pattern.surrounding_distance_um, list(c.pattern.surrounding_angles_deg),
+                        c.pattern.burn_metric, c.pattern.burn_threshold],
+            "min_area": c.min_area,
+            "on_out_of_range": c.on_out_of_range,
+        }
+
     def _load_manifest(self, path):
         if path.exists():
-            manifest = json.loads(path.read_text(encoding="utf-8"))
+            try:
+                manifest = json.loads(path.read_text(encoding="utf-8"))
+            except (ValueError, OSError) as exc:
+                raise ConfigError(f"existing manifest is corrupt/unreadable (delete to restart): {path}") from exc
+            existing = manifest.get("config_fingerprint")
+            if existing is not None and existing != self._config_fingerprint():
+                raise ConfigError(
+                    f"manifest at {path} was produced under a different tray/calibration/pattern; "
+                    "use a fresh output directory or the matching config"
+                )
             done = set()
             completed_wafers = set()
             for wafer in manifest.get("wafers", []):
@@ -205,6 +296,7 @@ class TrayScanWorkflow:
             "sample_id": self.config.sample.id,
             "operator": self.config.sample.operator,
             "runtime_mode": self.runtime_mode,
+            "config_fingerprint": self._config_fingerprint(),
             "wafers": [],
         }
         return manifest, set(), set()
@@ -241,4 +333,9 @@ class TrayScanWorkflow:
         return entry
 
     def _write_manifest(self, path, manifest) -> None:
-        path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        # Atomic: write a sibling temp file then os.replace it in. A crash/power-loss
+        # mid-write then leaves the previous complete manifest intact (write_text
+        # truncates first, so a partial write would otherwise make resume unloadable).
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        os.replace(tmp, path)

@@ -94,3 +94,14 @@ def test_labels_are_unique_and_stable():
     centers = extract_centers(mask)
     labels = [c.label for c in centers]
     assert len(set(labels)) == len(labels)
+
+
+def test_string_row_rejected_not_read_as_foreground():
+    # a string row passes len() and its chars compare != 0; must be rejected.
+    with pytest.raises(ConfigError):
+        extract_centers(["000", "010"])
+
+
+def test_non_grid_rejected():
+    with pytest.raises(ConfigError):
+        extract_centers("not a grid")

@@ -124,6 +124,12 @@ class Calibration:
     a22: float
     image_center_px: float
     image_center_py: float
+    # Declared capture pixel space this calibration was measured in. When set, the
+    # tray scan asserts every recognition mask matches it — a mask at a different
+    # resolution (e.g. a model that resized) would otherwise map centroids to the
+    # wrong stage µm and drive the laser off-target. Optional for back-compat.
+    image_width_px: int | None = None
+    image_height_px: int | None = None
 
 
 @dataclass(frozen=True)
@@ -225,7 +231,12 @@ def _finite_int(value: Any, *, field: str) -> int:
     return int(number)
 
 
+_REQUIRED_AXES = ("x", "y")
+
+
 def _resolution_um(value: Any) -> dict[str, float]:
+    if not isinstance(value, dict):
+        raise ConfigError("resolution_um must be a mapping")
     resolution = {axis: _finite_float(item, field=f"resolution_um.{axis}") for axis, item in value.items()}
     for axis, item in resolution.items():
         if item <= 0:
@@ -234,6 +245,8 @@ def _resolution_um(value: Any) -> dict[str, float]:
 
 
 def _soft_limits_um(value: Any) -> dict[str, list[float]]:
+    if not isinstance(value, dict):
+        raise ConfigError("soft_limits_um must be a mapping")
     limits = {}
     for axis, axis_limits in value.items():
         if not isinstance(axis_limits, (list, tuple)) or len(axis_limits) != 2:
@@ -243,6 +256,17 @@ def _soft_limits_um(value: Any) -> dict[str, list[float]]:
             raise ConfigError(f"soft_limits_um.{axis} lower bound must be <= upper bound")
         limits[axis] = [low, high]
     return limits
+
+
+def _validate_stage_axes(resolution: dict[str, float], soft_limits: dict[str, list[float]]) -> None:
+    for field, mapping in (("resolution_um", resolution), ("soft_limits_um", soft_limits)):
+        missing = [axis for axis in _REQUIRED_AXES if axis not in mapping]
+        if missing:
+            raise ConfigError(f"stage {field} is missing required axes: {missing}")
+    if resolution.keys() != soft_limits.keys():
+        raise ConfigError(
+            f"stage resolution_um axes {sorted(resolution)} must match soft_limits_um axes {sorted(soft_limits)}"
+        )
 
 
 def _parse_pwm_channel(name: str, value: Any) -> PwmChannel:
@@ -292,6 +316,9 @@ def load_devices_config(path: str | Path) -> DevicesConfig:
         spectrometer = data["spectrometer"]
         camera = data["camera"]
         light = data["light"]
+        resolution_um = _resolution_um(stage["resolution_um"])
+        soft_limits_um = _soft_limits_um(stage["soft_limits_um"])
+        _validate_stage_axes(resolution_um, soft_limits_um)
         return DevicesConfig(
             runtime=RuntimeConfig(
                 mode=parse_runtime_mode(runtime.get("mode")),
@@ -301,9 +328,9 @@ def load_devices_config(path: str | Path) -> DevicesConfig:
                 type=str(stage["type"]),
                 port=str(stage["port"]),
                 baudrate=_finite_int(stage["baudrate"], field="baudrate"),
-                resolution_um=_resolution_um(stage["resolution_um"]),
+                resolution_um=resolution_um,
                 default_speed=_finite_int(stage["default_speed"], field="default_speed"),
-                soft_limits_um=_soft_limits_um(stage["soft_limits_um"]),
+                soft_limits_um=soft_limits_um,
                 state_file=Path(stage["state_file"]),
                 max_unknown_move_um=_finite_float(stage["max_unknown_move_um"], field="max_unknown_move_um"),
             ),
@@ -322,7 +349,12 @@ def load_devices_config(path: str | Path) -> DevicesConfig:
 
 
 def _parse_sample(sample: Any) -> SampleConfig:
-    return SampleConfig(id=str(sample["id"]), operator=str(sample["operator"]))
+    sample_id = str(sample["id"])
+    # sample.id becomes a filesystem path component (run dir / manifest), so keep it
+    # a single safe token — otherwise '../x' or 'a/b' escapes the output directory.
+    if not sample_id or sample_id in (".", "..") or any(ch in sample_id for ch in "/\\") or "\x00" in sample_id:
+        raise ConfigError(f"sample.id must be a safe filename token (no path separators): {sample_id!r}")
+    return SampleConfig(id=sample_id, operator=str(sample["operator"]))
 
 
 def _parse_optics(optics: Any) -> OpticsConfig:
@@ -415,6 +447,8 @@ def _parse_pattern(pattern: Any) -> ScanPattern:
     )
     if result.repeats_per_point < 2:
         raise ConfigError("pattern.repeats_per_point must be >= 2 for a burn check")
+    if result.burn_threshold < 0:
+        raise ConfigError("pattern.burn_threshold must be >= 0")
     if result.surrounding_count != len(result.surrounding_angles_deg):
         raise ConfigError("pattern.surrounding_count must equal len(surrounding_angles_deg)")
     if result.surrounding_count > 0 and result.surrounding_distance_um <= 0:
@@ -440,6 +474,8 @@ def workflow_config_from_tray_scan(scan_config: "TrayScanConfig") -> WorkflowCon
 
 
 def _parse_calibration(calibration: Any) -> Calibration:
+    width = calibration.get("image_width_px")
+    height = calibration.get("image_height_px")
     result = Calibration(
         objective=str(calibration["objective"]),
         a11=_finite_float(calibration["a11"], field="calibration.a11"),
@@ -448,9 +484,16 @@ def _parse_calibration(calibration: Any) -> Calibration:
         a22=_finite_float(calibration["a22"], field="calibration.a22"),
         image_center_px=_finite_float(calibration["image_center_px"], field="calibration.image_center_px"),
         image_center_py=_finite_float(calibration["image_center_py"], field="calibration.image_center_py"),
+        image_width_px=_finite_int(width, field="calibration.image_width_px") if width is not None else None,
+        image_height_px=_finite_int(height, field="calibration.image_height_px") if height is not None else None,
     )
-    if result.a11 * result.a22 - result.a12 * result.a21 == 0:
-        raise ConfigError("calibration matrix is singular (determinant is zero)")
+    det = result.a11 * result.a22 - result.a12 * result.a21
+    scale = max(abs(result.a11), abs(result.a12), abs(result.a21), abs(result.a22), 1.0)
+    if abs(det) <= 1e-12 * scale * scale:
+        raise ConfigError("calibration matrix is singular or near-singular (determinant ~ 0)")
+    for axis, value in (("image_width_px", result.image_width_px), ("image_height_px", result.image_height_px)):
+        if value is not None and value <= 0:
+            raise ConfigError(f"calibration.{axis} must be positive")
     return result
 
 

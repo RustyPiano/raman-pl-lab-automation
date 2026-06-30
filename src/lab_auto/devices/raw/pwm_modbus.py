@@ -15,6 +15,7 @@ Register map (spec 6.5):
 - Reg23-Reg25   key-lock / baud / undefined -- forbidden to write.
 """
 
+import math
 from dataclasses import dataclass
 
 
@@ -107,6 +108,8 @@ def voltage_to_register(voltage_v: float) -> int:
     if isinstance(voltage_v, bool) or not isinstance(voltage_v, (int, float)):
         raise ProtocolError("voltage must be a number")
     scaled = float(voltage_v) * 10
+    if not math.isfinite(scaled):
+        raise ProtocolError("voltage must be finite")
     if scaled < 0:
         raise ProtocolError("voltage must be non-negative")
     # Enforce the hard cap before rounding so e.g. 5.04 V cannot round down to 5.0.
@@ -152,15 +155,18 @@ def build_write_multiple_request(*, station: int, address: int, values: list[int
     if not values:
         raise ProtocolError("write-multiple requires at least one value")
     count = len(values)
+    if count > 123:  # Modbus 0x10 caps at 123 registers; also keeps byte-count in one byte
+        raise ProtocolError("write-multiple supports at most 123 registers")
+    _validate_register(address + count - 1)  # reject writes spilling past the register map
     for offset in range(count):
         target = address + offset
+        _validate_word(values[offset], field="value")  # validate before any comparison
         if target in FORBIDDEN_REGISTERS:
             raise ProtocolError(f"register {target} is forbidden to write")
         if target == VOLTAGE_REGISTER and values[offset] > MAX_VOLTAGE_DECIVOLT:
             raise ProtocolError("voltage register write exceeds the 5.0 V hard cap")
     data = bytearray()
     for value in values:
-        _validate_word(value, field="value")
         data += bytes([(value >> 8) & 0xFF, value & 0xFF])
     body = bytes(
         [station, WRITE_MULTIPLE, (address >> 8) & 0xFF, address & 0xFF, (count >> 8) & 0xFF, count & 0xFF, len(data)]
