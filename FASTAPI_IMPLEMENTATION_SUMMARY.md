@@ -147,6 +147,7 @@ uvicorn lab_auto.api.main:app --host 127.0.0.1 --port 8008 --reload
 
 - **单线程任务队列**：确保同一时间只有一个硬件操作
 - **串行执行**：防止并发激光操作导致安全隐患
+- **真机显式确认**：Web API 默认 `dry_run`，`mode=real` 必须传入 `confirm_real=true`，任务队列层也会复查
 - **状态管理**：任务状态持久化，支持停止和查询
 
 ### 2. 异步架构
@@ -191,7 +192,7 @@ uvicorn lab_auto.api.main:app --host 127.0.0.1 --port 8008 --reload
 
 ### 短期（Phase A 核心）
 
-1. ✅ 前端开发（Vue 3 + Vite）
+1. ✅ 前端开发（React + Vite）
 2. ✅ WebSocket 客户端集成
 3. ✅ 实时进度显示
 
@@ -217,7 +218,7 @@ FastAPI 后端已完整实现，满足所有核心需求：
 ✅ WebSocket 实时进度推送
 ✅ 单线程任务队列（硬件安全）
 ✅ 异步架构（高性能）
-✅ 完整测试通过
+✅ 默认单元测试通过（`pytest -q`）
 ✅ 生产就绪（CORS、日志、错误处理）
 
 现在可以开始前端开发，通过这些 API 构建用户界面。

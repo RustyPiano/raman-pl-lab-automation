@@ -79,14 +79,19 @@ class TaskQueue:
         config_path: str,
         devices_path: str | None,
         mode: str,
+        confirm_real: bool = False,
     ):
         """Submit a single-point measurement job."""
+        if mode == "real" and not confirm_real:
+            raise ConfigError("Real mode requires confirm_real=true")
+
         await self._queue.put({
             "job_id": job_id,
             "type": "single_point",
             "config_path": config_path,
             "devices_path": devices_path,
             "mode": mode,
+            "confirm_real": confirm_real,
         })
         logger.info(f"Submitted single-point job {job_id} to queue")
 
@@ -142,6 +147,7 @@ class TaskQueue:
                             task["config_path"],
                             task["devices_path"],
                             task["mode"],
+                            task["confirm_real"],
                         )
                     else:
                         raise ValueError(f"Unknown job type: {task['type']}")
@@ -190,6 +196,7 @@ class TaskQueue:
         config_path: str,
         devices_path: str | None,
         mode: str,
+        confirm_real: bool,
     ):
         """Execute a single-point measurement in a thread pool.
 
@@ -231,6 +238,7 @@ class TaskQueue:
             config_path,
             devices_path,
             mode,
+            confirm_real,
             job_id,
         )
 
@@ -244,6 +252,7 @@ class TaskQueue:
         config_path: str,
         devices_path: str | None,
         mode: str,
+        confirm_real: bool,
         job_id: str,
     ) -> dict[str, Any]:
         """Synchronous execution of single-point workflow.
@@ -254,6 +263,9 @@ class TaskQueue:
         Note: This method cannot use asyncio.run() as it may be called from
         within an async context. Progress updates are handled by the caller.
         """
+        if mode == "real" and not confirm_real:
+            raise ConfigError("Real mode requires confirm_real=true")
+
         # Load configs
         workflow_config, devices_config = load_workflow_and_devices(
             config_path,
@@ -277,7 +289,7 @@ class TaskQueue:
 
         try:
             # Execute workflow (blocking hardware operation)
-            output_dir = workflow.run_single_point(require_confirmation=False)
+            output_dir = workflow.run_single_point(require_confirmation=confirm_real)
 
             return {
                 "output_directory": str(output_dir),

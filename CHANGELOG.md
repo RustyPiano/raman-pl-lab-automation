@@ -12,18 +12,18 @@
   - `/api/devices/*` - 设备管理和状态查询
   - `/api/configs/*` - 配置文件管理
   - `/api/workflow/*` - 工作流执行和任务管理
-  - `/ws/jobs/{job_id}` - WebSocket 实时进度推送
+  - `/api/workflow/ws/jobs/{job_id}` - WebSocket 实时进度推送
 - ✅ 单线程任务队列（`ThreadPoolExecutor(max_workers=1)`）
 - ✅ Pydantic 数据模型和类型安全
 - ✅ WebSocket ConnectionManager（多客户端支持）
 - ✅ 自动生成 Swagger 文档
 
 #### 前端 (React + shadcn/ui)
-- ✅ React 18 + TypeScript + Vite 项目初始化
+- ✅ React 19 + TypeScript + Vite 项目初始化
 - ✅ shadcn/ui 组件集成（9 个组件）
 - ✅ Zustand 状态管理
 - ✅ 核心页面：
-  - 单点测量（配置选择、参数覆盖、实时进度）
+  - 单点测量（配置选择、YAML 参数、实时进度）
   - 托盘扫描（占位）
   - 设备监控（占位）
   - 历史记录（占位）
@@ -68,15 +68,22 @@
 - ✅ 类型安全错误处理：添加 `getErrorMessage()` 工具函数
 - ✅ WebSocket URL 构造：支持 `VITE_WS_HOST` 环境变量
 - ✅ UI 组件完整性：安装所有 shadcn/ui 组件
+- ✅ 前后端 API 契约对齐：前端发送 `config_path`，使用后端返回的任务 `id`
+- ✅ WebSocket 代理路径修复：开发模式通过 `/api/workflow/ws/jobs/{job_id}` 转发
+- ✅ Tailwind CSS v4 构建修复：使用 `@tailwindcss/postcss`
+
+#### 安全修复
+- ✅ Web API 默认 `dry_run`，不再默认进入 real 模式
+- ✅ real 模式必须显式传入 `confirm_real=true`
+- ✅ `TaskQueue` 层也拒绝未确认的 real 模式任务，防止绕过路由直接入队
 
 ### 代码质量
-- **后端评分**：82/100 → 94/100 (+12 分，生产级)
-- **前端评分**：82/100 → 91/100 (+9 分，生产级)
-- **平均评分**：92.5/100
+- 默认测试入口：`pytest -q` 只收集 `tests/`
+- 当前验证：`pytest -q` 393 passed；`npm run build` passed
 
 ### 技术栈
 - 后端：FastAPI + asyncio + ThreadPoolExecutor
-- 前端：React 18 + TypeScript + Vite + shadcn/ui + Zustand + Recharts
+- 前端：React 19 + TypeScript + Vite + shadcn/ui + Zustand + Recharts
 - 通信：REST API + WebSocket
 - 平台：macOS + Windows
 

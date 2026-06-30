@@ -31,6 +31,7 @@
 
 - ✅ **后端 (FastAPI)**：REST API + WebSocket 实时推送（评分 94/100，生产级）
   - 单线程任务队列（硬件安全保障）
+  - Web API 默认 dry-run；real 模式必须显式安全确认
   - 路径注入防护
   - 完整的设备、配置、工作流管理 API
   - 自动生成 Swagger 文档：http://127.0.0.1:8008/docs
@@ -39,8 +40,10 @@
   - TypeScript 严格模式
   - 实时进度显示（8 步骤可视化）
   - 光谱数据图表
-  - 安全确认对话框
+  - real 模式安全确认对话框
   - 类型安全错误处理
+
+- ✅ **当前验证**：`pytest -q` 393 passed；`npm run build` passed
 
 - ✅ **跨平台支持**：macOS + Windows 完全兼容
   - 提供完整的 Windows 部署文档和脚本

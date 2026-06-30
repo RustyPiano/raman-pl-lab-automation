@@ -4,7 +4,7 @@
 
 ## 技术栈
 
-- **React 18** - UI 框架
+- **React 19** - UI 框架
 - **TypeScript** - 类型安全
 - **Vite** - 构建工具
 - **Tailwind CSS** - 样式框架
@@ -45,11 +45,11 @@ npm run build
 #### 单点测量
 - 配置文件选择
 - 运行模式切换（dry_run/simulated/real）
-- 参数覆盖（样品ID、操作员、背景扣除等）
+- 单点参数由 YAML 配置驱动
 - 实时进度显示
 - WebSocket 实时更新
 - 光谱图表展示
-- 激光安全确认（real 模式）
+- real 模式显式安全确认
 
 ### 🚧 Phase B 待开发
 
@@ -96,12 +96,12 @@ frontend/
 - **端点**:
   - `GET /configs` - 获取配置列表
   - `GET /configs/{name}` - 获取特定配置
-  - `POST /workflow/single-point` - 启动单点测量
+  - `POST /workflow/single-point` - 启动单点测量（请求体使用 `config_path`、`mode`、可选 `devices_path`；real 模式还需要 `confirm_real=true`）
   - `GET /workflow/jobs/{job_id}` - 获取任务状态
   - `POST /workflow/jobs/{job_id}/stop` - 停止任务
 
 ### WebSocket
-- **URL**: `ws://127.0.0.1:8008/ws/jobs/{job_id}`
+- **URL**: `ws://127.0.0.1:8008/api/workflow/ws/jobs/{job_id}`
 - **用途**: 实时接收任务进度更新
 
 ## 配置
@@ -112,10 +112,10 @@ frontend/
 
 ```typescript
 proxy: {
-  '/api': 'http://127.0.0.1:8008',
-  '/ws': {
-    target: 'ws://127.0.0.1:8008',
-    ws: true
+  '/api': {
+    target: 'http://127.0.0.1:8008',
+    changeOrigin: true,
+    ws: true,
   }
 }
 ```
@@ -160,7 +160,8 @@ function MyComponent() {
 
 ## 安全特性
 
-- **激光安全确认**: Real 模式下开启激光前必须通过安全检查清单
+- **默认 dry-run**: API 默认不会进入真机模式
+- **激光安全确认**: Real 模式必须在请求中显式发送 `confirm_real=true`
 - **实时反馈**: 所有操作都有即时的加载状态和错误提示
 - **WebSocket 重连**: 连接断开后自动重试（3 秒后）
 
@@ -173,4 +174,3 @@ function MyComponent() {
 ## 许可证
 
 内部项目
-

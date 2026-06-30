@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import apiClient, { getErrorMessage } from '@/api/client';
-import type { JobStatus, ProgressUpdate, WorkflowConfig } from '@/api/client';
+import type { ApiJobStatus, JobStatus, ProgressUpdate } from '@/api/client';
 
 /**
  * Construct WebSocket URL with environment variable support
@@ -9,8 +9,14 @@ import type { JobStatus, ProgressUpdate, WorkflowConfig } from '@/api/client';
 const getWebSocketUrl = (jobId: string): string => {
   const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const wsHost = import.meta.env.VITE_WS_HOST || window.location.host;
-  return `${wsProtocol}//${wsHost}/ws/jobs/${jobId}`;
+  return `${wsProtocol}//${wsHost}/api/workflow/ws/jobs/${jobId}`;
 };
+
+const toJobStatus = (job: ApiJobStatus): JobStatus => ({
+  ...job,
+  progress: job.progress.percentage ?? 0,
+  current_step: job.progress.current_step,
+});
 
 interface WorkflowState {
   currentJob: JobStatus | null;
@@ -20,9 +26,9 @@ interface WorkflowState {
 
   // Actions
   startSinglePoint: (
-    configName: string,
+    configPath: string,
     mode: 'dry_run' | 'simulated' | 'real',
-    overrides?: WorkflowConfig
+    confirmReal?: boolean
   ) => Promise<string>;
   connectWebSocket: (jobId: string) => void;
   disconnectWebSocket: () => void;
@@ -39,19 +45,16 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   wsConnection: null,
   logs: [],
 
-  startSinglePoint: async (configName, mode, overrides) => {
+  startSinglePoint: async (configPath, mode, confirmReal = false) => {
     try {
       const response = await apiClient.startSinglePoint({
-        config_name: configName,
+        config_path: configPath,
         mode,
-        overrides,
+        confirm_real: confirmReal,
       });
 
-      const jobId = response.data.job_id;
-
-      // Fetch initial job status
-      const statusResponse = await apiClient.getJobStatus(jobId);
-      set({ currentJob: statusResponse.data });
+      const jobId = response.data.id;
+      set({ currentJob: toJobStatus(response.data) });
 
       // Connect WebSocket
       get().connectWebSocket(jobId);
@@ -125,26 +128,33 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   },
 
   updateProgress: (update: ProgressUpdate) => {
+    if (update.type === 'pong') return;
+
     set((state) => ({
       currentJob: state.currentJob ? {
         ...state.currentJob,
-        progress: update.progress,
-        current_step: update.current_step,
-        status: update.status as any,
-        result: update.result || state.currentJob.result,
-        error: update.error,
-        warnings: update.warnings,
+        status: update.type === 'error' ? 'failed' : update.status ?? state.currentJob.status,
+        progress: update.type === 'progress'
+          ? update.percentage ?? state.currentJob.progress
+          : update.progress?.percentage ?? state.currentJob.progress,
+        current_step: update.type === 'progress'
+          ? update.step ?? state.currentJob.current_step
+          : update.progress?.current_step ?? state.currentJob.current_step,
+        result: update.result ?? state.currentJob.result,
+        error: update.error ?? state.currentJob.error,
       } : null,
     }));
 
     // Add log message
-    const emoji = update.status === 'completed' ? '✅' :
-                  update.status === 'failed' ? '❌' :
-                  update.status === 'running' ? '▶️' : '⏸️';
-    get().addLog(`${emoji} ${update.message}`);
+    const status = update.type === 'error' ? 'failed' : update.status;
+    const emoji = status === 'completed' ? '✅' :
+                  status === 'failed' ? '❌' :
+                  status === 'running' || update.type === 'progress' ? '▶️' : '⏸️';
+    const message = update.message ?? update.error ?? update.step ?? status;
+    if (message) get().addLog(`${emoji} ${message}`);
 
     // Disconnect WebSocket if job is finished
-    if (update.status === 'completed' || update.status === 'failed' || update.status === 'stopped') {
+    if (status === 'completed' || status === 'failed' || status === 'stopped') {
       setTimeout(() => {
         get().disconnectWebSocket();
       }, 1000);
@@ -175,7 +185,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   fetchJobs: async () => {
     try {
       const response = await apiClient.getJobs();
-      set({ jobs: response.data });
+      set({ jobs: response.data.map(toJobStatus) });
     } catch (error) {
       console.error('Failed to fetch jobs:', error);
     }

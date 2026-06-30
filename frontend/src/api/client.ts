@@ -31,55 +31,79 @@ export interface WorkflowConfig {
   [key: string]: any;
 }
 
-export interface JobStartResponse {
-  job_id: string;
-  status: string;
-  message: string;
+export interface ConfigListResponse {
+  configs: string[];
+}
+
+export interface JobProgress {
+  current_step: string | null;
+  total_steps: number | null;
+  completed_steps: number;
+  message: string | null;
+  percentage: number | null;
+}
+
+export interface ApiJobStatus {
+  id: string;
+  type: string;
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'stopped';
+  progress: JobProgress;
+  created_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  error?: string | null;
+  result?: any;
 }
 
 export interface JobStatus {
-  job_id: string;
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'stopped';
+  id: string;
+  type: string;
+  status: ApiJobStatus['status'];
   progress: number;
-  current_step?: string;
+  current_step?: string | null;
+  created_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  error?: string | null;
   result?: any;
-  error?: string;
-  warnings?: string[];
 }
 
 export interface ProgressUpdate {
-  job_id: string;
-  progress: number;
-  current_step: string;
-  message: string;
-  status: string;
+  type: 'status' | 'progress' | 'error' | 'pong';
+  status?: ApiJobStatus['status'];
+  progress?: JobProgress;
+  step?: string;
+  completed?: number;
+  total?: number;
+  message?: string;
+  percentage?: number | null;
   result?: any;
   error?: string;
-  warnings?: string[];
 }
 
 export const apiClient = {
   // 获取所有配置
-  getConfigs: () => api.get<string[]>('/configs'),
+  getConfigs: () => api.get<ConfigListResponse>('/configs'),
 
   // 获取特定配置
   getConfig: (name: string) => api.get<any>(`/configs/${name}`),
 
   // 启动单点测量
   startSinglePoint: (data: {
-    config_name: string;
+    config_path: string;
+    devices_path?: string;
     mode: 'dry_run' | 'simulated' | 'real';
-    overrides?: WorkflowConfig;
-  }) => api.post<JobStartResponse>('/workflow/single-point', data),
+    confirm_real?: boolean;
+  }) => api.post<ApiJobStatus>('/workflow/single-point', data),
 
   // 获取任务状态
-  getJobStatus: (jobId: string) => api.get<JobStatus>(`/workflow/jobs/${jobId}`),
+  getJobStatus: (jobId: string) => api.get<ApiJobStatus>(`/workflow/jobs/${jobId}`),
 
   // 停止任务
-  stopJob: (jobId: string) => api.post<{ message: string }>(`/workflow/jobs/${jobId}/stop`),
+  stopJob: (jobId: string) => api.post<{ status: string; job_id: string }>(`/workflow/jobs/${jobId}/stop`),
 
   // 获取所有任务
-  getJobs: () => api.get<JobStatus[]>('/workflow/jobs'),
+  getJobs: () => api.get<ApiJobStatus[]>('/workflow/jobs'),
 };
 
 export default apiClient;

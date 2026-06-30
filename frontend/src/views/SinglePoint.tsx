@@ -40,9 +40,9 @@ export function SinglePoint() {
   const loadConfigs = async () => {
     try {
       const response = await apiClient.getConfigs();
-      setConfigs(response.data);
-      if (response.data.length > 0 && response.data[0]) {
-        setSelectedConfig(response.data[0]);
+      setConfigs(response.data.configs);
+      if (response.data.configs.length > 0 && response.data.configs[0]) {
+        setSelectedConfig(response.data.configs[0]);
       }
     } catch (error) {
       toast.error('加载配置失败: ' + getErrorMessage(error));
@@ -62,17 +62,12 @@ export function SinglePoint() {
     }
   };
 
-  const handleStart = async () => {
+  const handleStart = async (confirmReal = false) => {
     setIsStarting(true);
     clearLogs();
 
     try {
-      const overrides: any = {};
-      if (sampleId) overrides.sample_id = sampleId;
-      if (operator) overrides.operator = operator;
-      overrides.subtract_background = subtractBackground;
-
-      await startSinglePoint(selectedConfig, mode, overrides);
+      await startSinglePoint(`configs/${selectedConfig}`, mode, confirmReal);
       toast.success('任务已启动');
     } catch (error) {
       toast.error('启动失败: ' + getErrorMessage(error));
@@ -86,7 +81,7 @@ export function SinglePoint() {
     if (!currentJob) return;
 
     try {
-      await stopJob(currentJob.job_id);
+      await stopJob(currentJob.id);
       toast.info('任务已停止');
     } catch (error) {
       toast.error('停止失败: ' + getErrorMessage(error));
@@ -231,7 +226,7 @@ export function SinglePoint() {
       <SafetyConfirm
         open={showSafetyDialog}
         onOpenChange={setShowSafetyDialog}
-        onConfirm={handleStart}
+        onConfirm={() => handleStart(true)}
       />
     </div>
   );

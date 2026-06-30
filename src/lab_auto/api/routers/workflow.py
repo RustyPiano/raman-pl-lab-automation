@@ -26,6 +26,9 @@ async def start_single_point(request: SinglePointRequest):
             if not devices_path.exists():
                 raise HTTPException(status_code=404, detail=f"Devices config not found: {request.devices_path}")
 
+        if request.mode == "real" and not request.confirm_real:
+            raise HTTPException(status_code=400, detail="Real mode requires confirm_real=true")
+
         # Create job
         job_id = task_queue.create_job("single_point")
 
@@ -35,6 +38,7 @@ async def start_single_point(request: SinglePointRequest):
             config_path=request.config_path,
             devices_path=request.devices_path,
             mode=request.mode,
+            confirm_real=request.confirm_real,
         )
 
         job = task_queue.get_job(job_id)

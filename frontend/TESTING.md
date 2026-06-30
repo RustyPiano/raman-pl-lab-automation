@@ -21,7 +21,7 @@
 确保后端 API 正在运行：
 ```bash
 cd /Users/rustypiano/Documents/研究生/自主实验平台
-uvicorn src.lab_auto.api.app:app --host 127.0.0.1 --port 8008 --reload
+PYTHONPATH=src uvicorn lab_auto.api.main:app --host 127.0.0.1 --port 8008 --reload
 ```
 
 #### 测试流程
@@ -34,10 +34,9 @@ uvicorn src.lab_auto.api.app:app --host 127.0.0.1 --port 8008 --reload
    - Simulated: 模拟硬件行为
    - Real: 真机运行（需要安全确认）
 
-3. **填写参数覆盖（可选）**
-   - 样品 ID
-   - 操作员名称
-   - 背景扣除开关
+3. **确认配置**
+   - 单点测量参数当前来自所选 YAML 配置
+   - 页面上的样品 ID、操作员和背景扣除控件尚未写入后端请求
 
 4. **启动测量**
    - 点击"开始测量"按钮
@@ -72,7 +71,7 @@ WebSocket 应该自动连接并接收更新：
 
 ### ✅ 正常情况
 - 配置列表正确加载
-- 启动任务返回 job_id
+- 启动任务返回 `id`
 - WebSocket 连接成功
 - 进度实时更新
 - 任务完成后显示光谱图
@@ -94,7 +93,7 @@ curl http://127.0.0.1:8008/api/configs
 
 # 如果返回 404 或连接失败，启动后端
 cd /Users/rustypiano/Documents/研究生/自主实验平台
-uvicorn src.lab_auto.api.app:app --host 127.0.0.1 --port 8008
+PYTHONPATH=src uvicorn lab_auto.api.main:app --host 127.0.0.1 --port 8008
 ```
 
 ### 2. WebSocket 连接失败
@@ -108,7 +107,7 @@ uvicorn src.lab_auto.api.app:app --host 127.0.0.1 --port 8008
 **检查方法**:
 ```javascript
 // 在浏览器控制台运行
-const ws = new WebSocket('ws://localhost:8008/ws/jobs/test-123');
+const ws = new WebSocket('ws://localhost:8008/api/workflow/ws/jobs/test-123');
 ws.onopen = () => console.log('Connected');
 ws.onerror = (e) => console.error('Error:', e);
 ```

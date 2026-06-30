@@ -10,7 +10,8 @@ class SinglePointRequest(BaseModel):
     config_path: str = Field(..., description="Path to workflow config YAML")
     devices_path: str | None = Field(None, description="Override devices config path")
     sample_id: str | None = Field(None, description="Override sample ID")
-    mode: Literal["dry_run", "simulated", "real"] = Field("real", description="Execution mode")
+    mode: Literal["dry_run", "simulated", "real"] = Field("dry_run", description="Execution mode")
+    confirm_real: bool = Field(False, description="Explicit confirmation for real hardware mode")
 
 
 class JobProgress(BaseModel):

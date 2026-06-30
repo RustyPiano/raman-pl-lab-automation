@@ -11,7 +11,7 @@
 - ✅ Tailwind CSS 配置
 - ✅ shadcn/ui 组件库集成
 - ✅ 路径别名配置 (`@/`)
-- ✅ Vite 代理配置（API + WebSocket）
+- ✅ Vite 代理配置（API + `/api/workflow/ws/...` WebSocket）
 
 ### 2. 核心依赖
 - ✅ react-router-dom - 路由管理
@@ -57,10 +57,8 @@
 #### 单点测量 (SinglePoint)
 - ✅ 配置文件选择
 - ✅ 运行模式选择（dry_run/simulated/real）
-- ✅ 参数覆盖表单
-  - 样品 ID
-  - 操作员
-  - 背景扣除开关
+- ✅ YAML 配置驱动的单点参数
+- ⚠️ 页面上的样品 ID、操作员和背景扣除控件当前尚未写入后端请求
 - ✅ 启动/停止控制
 - ✅ 实时进度显示
 - ✅ 日志窗口（黑底绿字，终端风格）
@@ -96,6 +94,7 @@
   - 4 项安全检查清单
   - 红色确认按钮
   - 取消/确认选项
+- ✅ 请求层显式 `confirm_real=true`
 - ✅ 错误边界处理
 - ✅ 加载状态反馈
 

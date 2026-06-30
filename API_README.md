@@ -17,7 +17,7 @@ pip install fastapi uvicorn websockets python-multipart pydantic pyyaml
 
 **方法 1：使用启动脚本（推荐）**
 ```bash
-./start_api.sh
+./scripts/start_api.sh
 ```
 
 **方法 2：直接使用 uvicorn**
@@ -66,8 +66,20 @@ uvicorn lab_auto.api.main:app --host 127.0.0.1 --port 8008 --reload
 curl -X POST http://127.0.0.1:8008/api/workflow/single-point \
   -H "Content-Type: application/json" \
   -d '{
-    "config_path": "configs/single_point_532nm.yaml",
+    "config_path": "configs/single_point.example.yaml",
     "mode": "simulated"
+  }'
+```
+
+未传 `mode` 时默认使用 `dry_run`。真机模式必须显式确认：
+
+```bash
+curl -X POST http://127.0.0.1:8008/api/workflow/single-point \
+  -H "Content-Type: application/json" \
+  -d '{
+    "config_path": "configs/single_point.example.yaml",
+    "mode": "real",
+    "confirm_real": true
   }'
 ```
 
@@ -154,6 +166,7 @@ curl http://127.0.0.1:8008/api/configs
 ### 安全机制
 
 - 任务队列确保同一时间只有一个硬件操作
+- Web API 默认 `dry_run`，`mode=real` 必须带 `confirm_real=true`
 - 激光开关需要通过设备层的安全检查
 - 配置验证在任务启动前执行
 - WebSocket 连接自动清理断开的客户端
