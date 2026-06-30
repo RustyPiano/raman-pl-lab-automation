@@ -1,0 +1,52 @@
+runtime:
+  mode: dry_run
+  log_level: info
+
+stage:
+  type: waynelabs_linear
+  port: COM5
+  baudrate: 9600
+  resolution_um:
+    x: 0.04
+    y: 0.04
+    z: 0.04
+  default_speed: 8
+  soft_limits_um:
+    x: [-5000, 5000]
+    y: [-5000, 5000]
+    z: [-1000, 1000]
+  state_file: state/stage_position.json
+  max_unknown_move_um: 100
+
+spectrometer:
+  type: zolix
+  dll_path: C:/RamanSDK/SDK/x64/spectrometer_x64.dll
+  usb_mode: true
+
+camera:
+  type: dfield_vs_a4
+  dll_path: C:/RamanSDK/DField/x64/dfield-vs-a4.dll
+
+light:
+  type: manual
+  manual_light_control: true
+  # Phase 2 M1: real PWM Modbus RTU backend. Fill channels/setpoints only after the
+  # on-hardware acceptance confirms wiring, channel mapping, COM port and station id.
+  # type: pwm_modbus
+  # manual_light_control: false
+  # port: COM7
+  # station_id: 1
+  # baudrate: 9600
+  # max_output_voltage_v: 5.0
+  # required_output_voltage_v: 5.0
+  # channels:
+  #   led:
+  #     channel: 1
+  #     frequency_hz: 1000
+  #     duty_percent: 5.0
+  #     default_off_required: true
+  #   laser:
+  #     channel: 2
+  #     frequency_hz: 1000
+  #     duty_percent: 5.0
+  #     default_off_required: true
