@@ -348,13 +348,20 @@ def load_devices_config(path: str | Path) -> DevicesConfig:
         raise ConfigError(f"invalid devices configuration in {config_path}: {exc}") from exc
 
 
-def _parse_sample(sample: Any) -> SampleConfig:
-    sample_id = str(sample["id"])
-    # sample.id becomes a filesystem path component (run dir / manifest), so keep it
-    # a single safe token — otherwise '../x' or 'a/b' escapes the output directory.
+def validate_sample_id(sample_id: str) -> str:
+    """Reject a sample.id that isn't a safe single filename token.
+
+    It becomes a filesystem path component (run dir / manifest), so '../x' or
+    'a/b' would escape the output directory. Public so any layer that supplies an
+    id out-of-band (e.g. the web panel's override) can re-apply the same guard.
+    """
     if not sample_id or sample_id in (".", "..") or any(ch in sample_id for ch in "/\\") or "\x00" in sample_id:
         raise ConfigError(f"sample.id must be a safe filename token (no path separators): {sample_id!r}")
-    return SampleConfig(id=sample_id, operator=str(sample["operator"]))
+    return sample_id
+
+
+def _parse_sample(sample: Any) -> SampleConfig:
+    return SampleConfig(id=validate_sample_id(str(sample["id"])), operator=str(sample["operator"]))
 
 
 def _parse_optics(optics: Any) -> OpticsConfig:
