@@ -3,309 +3,805 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Raman/PL 自动化平台 · 项目概览</title>
+<title>Raman/PL 自动化平台 · 当前能力与待办核对</title>
 <style>
-  :root{
-    --bg:#0b0f17; --panel:#121826; --panel2:#1a2236; --line:#26304a;
-    --ink:#e8edf7; --muted:#93a0bd; --faint:#5f6d8c;
-    --done:#34d399; --doneb:#0d3b2e;
-    --active:#fbbf24; --activeb:#3d2f08;
-    --todo:#60a5fa; --todob:#10243f;
-    --laser:#f87171; --raw:#a78bfa; --safe:#f472b6;
+  :root {
+    color-scheme: light;
+    --bg: #f6f7f9;
+    --paper: #ffffff;
+    --ink: #18202b;
+    --muted: #596676;
+    --quiet: #8793a1;
+    --line: #dce2e8;
+    --line-strong: #c3ccd6;
+    --green: #138a62;
+    --green-soft: #e2f4ed;
+    --blue: #2563eb;
+    --blue-soft: #e7eefc;
+    --amber: #b77a1f;
+    --amber-soft: #fff1d4;
+    --red: #bf3d45;
+    --red-soft: #fae7e9;
+    --purple: #6b4db5;
+    --purple-soft: #eee9f8;
+    --teal: #0f766e;
+    --teal-soft: #ddf4f1;
+    --shadow: 0 16px 42px rgba(28, 39, 52, .08);
+    --radius: 8px;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   }
-  *{box-sizing:border-box}
-  body{margin:0;background:radial-gradient(1200px 600px at 70% -10%,#16203a 0,var(--bg) 60%);
-    color:var(--ink);font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
-    -webkit-font-smoothing:antialiased;padding:40px 24px 80px}
-  .wrap{max-width:1120px;margin:0 auto}
-  header{margin-bottom:28px}
-  .kicker{color:var(--todo);font-weight:700;letter-spacing:.14em;font-size:12px;text-transform:uppercase}
-  h1{margin:6px 0 6px;font-size:30px;letter-spacing:-.02em}
-  .sub{color:var(--muted);font-size:15px}
-  .meta{margin-top:14px;display:flex;flex-wrap:wrap;gap:8px}
-  .chip{background:var(--panel2);border:1px solid var(--line);border-radius:999px;padding:5px 13px;font-size:12.5px;color:var(--muted)}
-  .chip b{color:var(--ink)}
-  .chip.green{border-color:var(--doneb);color:var(--done)}
-  .chip.amber{border-color:var(--activeb);color:var(--active)}
 
-  section{margin-top:34px}
-  .h{display:flex;align-items:baseline;gap:12px;margin-bottom:16px}
-  .h h2{font-size:19px;margin:0;letter-spacing:-.01em}
-  .h .note{color:var(--faint);font-size:13px}
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background:
+      linear-gradient(180deg, #edf3f7 0, var(--bg) 430px),
+      var(--bg);
+    color: var(--ink);
+    font: 15px/1.58 var(--sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: inherit; text-decoration: none; }
+  a:hover { text-decoration: underline; text-underline-offset: 3px; }
+  code {
+    font-family: var(--mono);
+    font-size: .92em;
+    background: #eef2f6;
+    border: 1px solid #dfe6ed;
+    border-radius: 6px;
+    padding: 1px 5px;
+  }
+  .page { max-width: 1240px; margin: 0 auto; padding: 28px 24px 64px; }
+  .topbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 18px;
+    margin-bottom: 26px;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 280px;
+  }
+  .mark {
+    width: 38px;
+    height: 38px;
+    border-radius: 8px;
+    border: 1px solid var(--line-strong);
+    background:
+      linear-gradient(135deg, rgba(255,255,255,.72), rgba(255,255,255,0)),
+      conic-gradient(from 210deg, var(--teal), var(--blue), var(--amber), var(--teal));
+    box-shadow: inset 0 0 0 5px #fff;
+    position: relative;
+  }
+  .mark:after {
+    content: "";
+    position: absolute;
+    inset: 13px;
+    background: #fff;
+    border: 1px solid rgba(0,0,0,.18);
+    border-radius: 50%;
+  }
+  .brand b { display: block; font-size: 15px; }
+  .brand span { display: block; color: var(--muted); font-size: 12px; }
+  .nav { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+  .nav a {
+    color: var(--muted);
+    border: 1px solid transparent;
+    border-radius: 7px;
+    padding: 7px 10px;
+    font-size: 13px;
+  }
+  .nav a:hover { background: #fff; border-color: var(--line); text-decoration: none; }
 
-  /* architecture layered stack */
-  .stack{display:grid;gap:10px}
-  .layer{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 16px;
-    display:grid;grid-template-columns:140px 1fr;gap:16px;align-items:center;position:relative;overflow:hidden}
-  .layer::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--accent,var(--line))}
-  .layer .lname{font-weight:700;font-size:14px}
-  .layer .ldesc{color:var(--muted);font-size:13px}
-  .layer .ldesc code{background:#0c1322;border:1px solid var(--line);border-radius:6px;padding:1px 6px;color:var(--ink);font-size:12px}
-  .mods{margin-top:8px;display:flex;flex-wrap:wrap;gap:6px}
-  .mod{background:#0c1322;border:1px solid var(--line);border-radius:7px;padding:3px 9px;font-size:11.5px;color:var(--muted);font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
-  .mod.warn{border-color:var(--safe);color:var(--safe)}
-  .arrow{text-align:center;color:var(--faint);font-size:13px;letter-spacing:.3em;margin:-2px 0}
+  .hero {
+    display: grid;
+    grid-template-columns: minmax(0, 1.1fr) minmax(370px, .9fr);
+    gap: 24px;
+    align-items: center;
+  }
+  .hero-copy { padding: 26px 0 28px; }
+  h1 {
+    margin: 0 0 14px;
+    max-width: 760px;
+    font-size: clamp(33px, 4vw, 58px);
+    line-height: 1.04;
+    letter-spacing: 0;
+    font-weight: 780;
+  }
+  .lead {
+    max-width: 760px;
+    margin: 0;
+    color: #445160;
+    font-size: 18px;
+    line-height: 1.72;
+  }
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 24px;
+  }
+  .button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 38px;
+    padding: 8px 13px;
+    border-radius: 7px;
+    border: 1px solid var(--line-strong);
+    background: #fff;
+    color: var(--ink);
+    font-size: 13px;
+    font-weight: 700;
+  }
+  .button.primary { background: var(--ink); border-color: var(--ink); color: #fff; }
+  .button svg { width: 15px; height: 15px; stroke-width: 2.1; }
+  .button:hover { filter: brightness(.98); text-decoration: none; }
 
-  .flowbox{margin-top:14px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px}
-  .flow{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
-  .step{background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:7px 11px;font-size:12.5px}
-  .step.safe{border-color:var(--safe);color:#fbcfe8}
-  .sep{color:var(--faint)}
+  .summary {
+    background: rgba(255,255,255,.9);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 18px;
+  }
+  .summary-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .stat {
+    min-height: 92px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #fff;
+    padding: 13px;
+  }
+  .stat .label {
+    color: var(--quiet);
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+  }
+  .stat .value {
+    margin-top: 6px;
+    font-size: 22px;
+    line-height: 1.1;
+    font-weight: 780;
+  }
+  .stat .hint { margin-top: 5px; color: var(--muted); font-size: 12px; }
+  .alert {
+    margin-top: 12px;
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 10px;
+    align-items: start;
+    border: 1px solid #ebc77f;
+    background: var(--amber-soft);
+    color: #66460e;
+    border-radius: 8px;
+    padding: 12px;
+    font-size: 13px;
+  }
+  .alert svg { width: 18px; height: 18px; margin-top: 1px; color: var(--amber); }
 
-  /* roadmap */
-  .road{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:14px}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;position:relative}
-  .card .tag{position:absolute;top:14px;right:14px;font-size:11px;font-weight:700;padding:3px 9px;border-radius:999px}
-  .tag.done{background:var(--doneb);color:var(--done)}
-  .tag.active{background:var(--activeb);color:var(--active)}
-  .tag.todo{background:var(--todob);color:var(--todo)}
-  .card h3{margin:0 0 4px;font-size:16px}
-  .card .ph{font-size:11.5px;color:var(--faint);font-weight:700;letter-spacing:.1em;text-transform:uppercase}
-  .card ul{margin:10px 0 0;padding-left:18px;color:var(--muted);font-size:13px}
-  .card ul li{margin:3px 0}
-  .card .dep{margin-top:10px;font-size:12px;color:var(--faint)}
-  .card .dep b{color:var(--muted)}
+  section { margin-top: 34px; scroll-margin-top: 18px; }
+  .section-head {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 14px;
+  }
+  h2 {
+    margin: 0;
+    font-size: 22px;
+    line-height: 1.25;
+    letter-spacing: 0;
+  }
+  .section-note { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+  .source { color: var(--quiet); font-size: 12px; white-space: nowrap; }
+  .card {
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: 0 10px 28px rgba(28,39,52,.055);
+  }
 
-  /* gate callout */
-  .gate{margin-top:14px;background:linear-gradient(180deg,#2a1208,#1a0e08);border:1px solid #5a2a12;border-radius:14px;padding:16px 18px;display:flex;gap:14px;align-items:flex-start}
-  .gate .ic{font-size:22px;line-height:1}
-  .gate h3{margin:0 0 4px;color:#fdba74;font-size:15px}
-  .gate p{margin:0;color:#f2c8a0;font-size:13.5px}
+  .evidence-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+  }
+  .evidence {
+    padding: 14px;
+    min-height: 128px;
+  }
+  .evidence b { display: block; font-size: 14px; margin-bottom: 8px; }
+  .evidence p { margin: 0; color: var(--muted); font-size: 13px; }
+  .evidence code { display: inline-block; margin-top: 8px; }
 
-  /* next steps */
-  .next{counter-reset:s;display:grid;gap:10px}
-  .ns{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px 14px 54px;position:relative}
-  .ns::before{counter-increment:s;content:counter(s);position:absolute;left:16px;top:50%;transform:translateY(-50%);
-    width:26px;height:26px;border-radius:50%;background:var(--todob);border:1px solid var(--todo);color:var(--todo);
-    font-weight:700;font-size:13px;display:grid;place-items:center}
-  .ns b{font-size:14.5px}
-  .ns .d{color:var(--muted);font-size:13px;margin-top:2px}
-  .ns.now{border-color:var(--active)}
-  .ns.now::before{background:var(--activeb);border-color:var(--active);color:var(--active)}
+  .architecture {
+    display: grid;
+    grid-template-columns: minmax(0, 1.05fr) minmax(360px, .95fr);
+    gap: 18px;
+  }
+  .layers { padding: 18px; }
+  .layer {
+    display: grid;
+    grid-template-columns: 126px minmax(0, 1fr);
+    gap: 14px;
+    align-items: center;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #fff;
+    padding: 13px 14px;
+    position: relative;
+  }
+  .layer + .layer { margin-top: 9px; }
+  .layer:before {
+    content: "";
+    position: absolute;
+    left: -1px;
+    top: -1px;
+    bottom: -1px;
+    width: 5px;
+    border-radius: 8px 0 0 8px;
+    background: var(--accent);
+  }
+  .layer-title { font-size: 15px; font-weight: 780; }
+  .layer-title span {
+    display: block;
+    margin-top: 2px;
+    color: var(--quiet);
+    font: 11px/1.35 var(--mono);
+    font-weight: 500;
+  }
+  .layer p { margin: 0 0 8px; color: var(--muted); font-size: 13px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #f7f9fb;
+    color: #3f4b58;
+    padding: 3px 7px;
+    font: 11.5px/1.3 var(--mono);
+  }
+  .chip.green { color: var(--green); border-color: #b8decf; background: var(--green-soft); }
+  .chip.red { color: var(--red); border-color: #f0c6ca; background: var(--red-soft); }
+  .chip.blue { color: var(--blue); border-color: #bdcaf6; background: var(--blue-soft); }
 
-  footer{margin-top:40px;color:var(--faint);font-size:12px;text-align:center;border-top:1px solid var(--line);padding-top:18px}
-  .legend{display:flex;gap:16px;flex-wrap:wrap;justify-content:center;margin-bottom:8px}
-  .legend span{display:inline-flex;align-items:center;gap:6px}
-  .dot{width:9px;height:9px;border-radius:50%}
+  .flow-panel { padding: 18px; }
+  .flow-panel h3, .list-card h3 { margin: 0 0 10px; font-size: 15px; line-height: 1.32; }
+  .flow { display: grid; gap: 8px; }
+  .flow-row { display: grid; grid-template-columns: 24px 1fr; gap: 10px; align-items: start; }
+  .flow-dot {
+    width: 24px;
+    height: 24px;
+    border-radius: 8px;
+    display: grid;
+    place-items: center;
+    color: #fff;
+    background: var(--blue);
+    font-size: 12px;
+    font-weight: 800;
+  }
+  .flow-row.safe .flow-dot { background: var(--red); }
+  .flow-row.done .flow-dot { background: var(--green); }
+  .flow-row strong { display: block; font-size: 13px; }
+  .flow-row span { color: var(--muted); font-size: 12px; }
+
+  .status-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+  }
+  .list-card {
+    padding: 16px;
+    border-top: 4px solid var(--tone);
+  }
+  .list-card .tag {
+    display: inline-flex;
+    margin-bottom: 10px;
+    color: var(--tone);
+    background: var(--soft);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 3px 9px;
+    font-size: 12px;
+    font-weight: 800;
+  }
+  .list-card ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: grid;
+    gap: 9px;
+  }
+  .list-card li {
+    display: grid;
+    grid-template-columns: 18px 1fr;
+    gap: 8px;
+    align-items: start;
+    color: var(--muted);
+    font-size: 13px;
+  }
+  .list-card li:before {
+    content: "";
+    width: 9px;
+    height: 9px;
+    margin: 6px 0 0 4px;
+    border-radius: 50%;
+    background: var(--tone);
+  }
+  .list-card li strong { color: var(--ink); font-weight: 720; }
+
+  .roadmap {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(150px, 1fr));
+    gap: 10px;
+  }
+  .milestone {
+    min-height: 210px;
+    border: 1px solid var(--line);
+    border-top: 4px solid var(--tone);
+    border-radius: 8px;
+    background: #fff;
+    padding: 13px;
+    display: flex;
+    flex-direction: column;
+  }
+  .milestone .num {
+    width: fit-content;
+    min-width: 34px;
+    padding: 4px 8px;
+    border-radius: 7px;
+    color: var(--tone);
+    background: var(--soft);
+    font-weight: 800;
+    font-size: 13px;
+  }
+  .milestone h3 { margin: 12px 0 7px; font-size: 15px; line-height: 1.25; }
+  .milestone p { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+  .milestone .state {
+    margin-top: auto;
+    padding-top: 12px;
+    color: var(--tone);
+    font-size: 12px;
+    font-weight: 780;
+  }
+
+  .test-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 14px;
+  }
+  .test-card { padding: 16px; }
+  .test-card h3 { margin: 0 0 10px; font-size: 15px; }
+  .test-card ol {
+    margin: 0;
+    padding-left: 20px;
+    color: var(--muted);
+    font-size: 13px;
+  }
+  .test-card li { margin: 7px 0; }
+  .test-card strong { color: var(--ink); }
+
+  .docs {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+  }
+  .doc-link {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    min-height: 112px;
+    padding: 14px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #fff;
+  }
+  .doc-link b { font-size: 14px; }
+  .doc-link span {
+    margin-top: 8px;
+    color: var(--muted);
+    font: 11.5px/1.4 var(--mono);
+    overflow-wrap: anywhere;
+  }
+  .doc-link:hover { border-color: var(--line-strong); box-shadow: 0 8px 22px rgba(30,42,56,.07); text-decoration: none; }
+
+  footer {
+    margin-top: 38px;
+    border-top: 1px solid var(--line);
+    padding-top: 18px;
+    color: var(--quiet);
+    font-size: 12px;
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  @media (max-width: 1060px) {
+    .hero, .architecture, .status-grid, .test-grid { grid-template-columns: 1fr; }
+    .roadmap { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .docs, .evidence-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+  @media (max-width: 720px) {
+    .page { padding: 20px 14px 48px; }
+    .topbar { align-items: flex-start; flex-direction: column; }
+    .nav { justify-content: flex-start; }
+    .summary-grid, .roadmap, .docs, .evidence-grid { grid-template-columns: 1fr; }
+    .layer { grid-template-columns: 1fr; gap: 8px; }
+    .section-head { align-items: flex-start; flex-direction: column; gap: 6px; }
+    .source { white-space: normal; }
+    h1 { font-size: 34px; }
+    .lead { font-size: 16px; }
+  }
 </style>
 </head>
 <body>
-<div class="wrap">
-
-  <header>
-    <div class="kicker">实验室 Raman / PL 自动化平台</div>
-    <h1>项目架构 · 路线图 · 下一步</h1>
-    <div class="sub">封装底层硬件控制，提供可脚本调用的 Python API 与 <code style="font-family:ui-monospace,Menlo,monospace">ramanctl</code> CLI，为后续 AI Agent 全自动化打基础。</div>
-    <div class="meta">
-      <span class="chip green">Phase 1 ✓ <b>代码完成 · 已合并 main</b></span>
-      <span class="chip green"><b>235</b> tests passed</span>
-      <span class="chip amber">真机验收 · <b>已推迟</b></span>
-      <span class="chip">分支 <b>main</b> · 无远程</span>
-      <span class="chip">更新于 <b>2026-06-09</b></span>
-    </div>
-  </header>
-
-  <!-- ARCHITECTURE -->
-  <section>
-    <div class="h"><h2>① 当前架构</h2><span class="note">严格分层：每层只看下一层的干净接口，协议字符串 / native symbol 锁在最底层</span></div>
-    <div class="stack">
-
-      <div class="layer" style="--accent:var(--todo)">
-        <div class="lname">CLI<br><span style="font-weight:400;color:var(--faint);font-size:12px">ramanctl</span></div>
-        <div>
-          <div class="ldesc">无状态命令行：每次调用都是独立进程，不假设连接 / 句柄跨命令保留。</div>
-          <div class="mods"><span class="mod">devices</span><span class="mod">stage</span><span class="mod">spec</span><span class="mod">camera</span><span class="mod">workflow</span></div>
-        </div>
-      </div>
-      <div class="arrow">▲ 调用</div>
-
-      <div class="layer" style="--accent:#22d3ee">
-        <div class="lname">Workflow</div>
-        <div>
-          <div class="ldesc">业务流程编排：单点 Raman/PL 测量；输出 <code>metadata.json</code> / <code>raw.csv</code> / <code>corrected.csv</code> / <code>run.log</code>。</div>
-          <div class="mods"><span class="mod">workflow/raman.py</span><span class="mod">processing/background.py</span><span class="mod">workflow/data.py</span></div>
-        </div>
-      </div>
-      <div class="arrow">▲ 调用</div>
-
-      <div class="layer" style="--accent:var(--done)">
-        <div class="lname">Adapter</div>
-        <div>
-          <div class="ldesc">干净的 typed Python API + 安全状态机；不碰 ctypes / 裸串口指令。</div>
-          <div class="mods"><span class="mod">waynelabs_stage.py</span><span class="mod">zolix_spectrometer.py</span><span class="mod">dfield_camera.py</span><span class="mod">light.py（manual）</span><span class="mod warn">✚ 安全校验</span></div>
-        </div>
-      </div>
-      <div class="arrow">▲ 封装</div>
-
-      <div class="layer" style="--accent:var(--raw)">
-        <div class="lname">Raw</div>
-        <div>
-          <div class="ldesc">唯一允许出现 native symbol、Modbus 帧、DLL 签名、协议字符串的地方。</div>
-          <div class="mods"><span class="mod">raw/waynelabs_protocol.py</span><span class="mod">raw/zolix_ctypes.py</span><span class="mod">raw/dfield_ctypes.py</span></div>
-        </div>
-      </div>
-      <div class="arrow">▲ ctypes / serial</div>
-
-      <div class="layer" style="--accent:var(--faint)">
-        <div class="lname">硬件 / SDK</div>
-        <div>
-          <div class="ldesc">WayneLabs 位移台（串口/Modbus）· Zolix 光谱仪（DLL）· DField-VS-A4 相机（DLL）· PWM 信号发生器（激光/白光）</div>
-        </div>
-      </div>
+  <div class="page">
+    <div class="topbar">
+      <a class="brand" href="../README.md" aria-label="打开 README">
+        <span class="mark" aria-hidden="true"></span>
+        <span>
+          <b>Raman/PL 自动化平台</b>
+          <span>当前能力 · 未完成事项 · 实机测试</span>
+        </span>
+      </a>
+      <nav class="nav" aria-label="页面导航">
+        <a href="#evidence">核对依据</a>
+        <a href="#architecture">架构</a>
+        <a href="#status">状态清单</a>
+        <a href="#hardware">实机测试</a>
+        <a href="#docs">文档入口</a>
+      </nav>
     </div>
 
-    <div class="flowbox">
-      <div style="font-size:12.5px;color:var(--faint);margin-bottom:10px;letter-spacing:.05em">单点测量工作流（dry-run 已验证 · 粉色 = 安全关卡）</div>
-      <div class="flow">
-        <span class="step">devices_check</span><span class="sep">→</span>
-        <span class="step">配置光路<br><span style="color:var(--faint);font-size:11px">入/出口·光栅·波长·狭缝</span></span><span class="sep">→</span>
-        <span class="step safe">确认激光 OFF</span><span class="sep">→</span>
-        <span class="step">采背景</span><span class="sep">→</span>
-        <span class="step safe">确认激光 ON</span><span class="sep">→</span>
-        <span class="step">采样品</span><span class="sep">→</span>
-        <span class="step">扣背景</span><span class="sep">→</span>
-        <span class="step">保存输出</span>
+    <header class="hero">
+      <div class="hero-copy">
+        <h1>当前项目：P1 和 M1 已完成代码闭环，下一步是 M2 Mapping。</h1>
+        <p class="lead">
+          本页基于当前仓库、测试结果和验收文档重新核对。结论是：单点测量基础能力和
+          PWM 串口光源后端已经完成本地 dry-run / simulated 验证；真实硬件验收尚未执行。
+          M2 Mapping 已有实现计划，但代码还没有落地。
+        </p>
+        <div class="actions">
+          <a class="button primary" href="#status">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>
+            看状态清单
+          </a>
+          <a class="button" href="superpowers/plans/2026-06-13-phase2-m2-mapping-workflow.md">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M8 4h8l4 4v12H4V4h4Z"/><path d="M16 4v4h4"/><path d="M8 13h8"/><path d="M8 17h5"/></svg>
+            打开 M2 计划
+          </a>
+        </div>
       </div>
-    </div>
-  </section>
 
-  <!-- HARDWARE GATE -->
-  <div class="gate">
-    <div class="ic">⚠️</div>
-    <div>
-      <h3>关键约束：真机验收统一推迟</h3>
-      <p>"235 测试全绿" = 逻辑在 macOS 上经 dry-run / simulated 验证，<b>≠ 已上机验证</b>。厂家 DLL 是 Windows 的，真机命令需在实验室 Windows 64 位机器上跑（见 <code>docs/phase1-hardware-acceptance.md</code>），按计划等所有开发完成后统一执行。</p>
-    </div>
+      <aside class="summary" aria-label="核对摘要">
+        <div class="summary-grid">
+          <div class="stat">
+            <div class="label">核对日期</div>
+            <div class="value">2026-06-18</div>
+            <div class="hint">重新核对仓库状态</div>
+          </div>
+          <div class="stat">
+            <div class="label">测试结果</div>
+            <div class="value">296 passed</div>
+            <div class="hint">本地 pytest</div>
+          </div>
+          <div class="stat">
+            <div class="label">已完成</div>
+            <div class="value">P1 + M1</div>
+            <div class="hint">代码完成，待真机</div>
+          </div>
+          <div class="stat">
+            <div class="label">下一步</div>
+            <div class="value">M2</div>
+            <div class="hint">Mapping 工作流 + CLI</div>
+          </div>
+        </div>
+        <div class="alert">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="m10.3 4.1-8.1 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-2.9l-8.1-14a2 2 0 0 0-3.4 0Z"/></svg>
+          <div>
+            <strong>重要边界：</strong>
+            本地测试通过不等于实机通过。Phase 1 和 M1 都还需要在实验室 Windows 64 位机器上验收。
+          </div>
+        </div>
+      </aside>
+    </header>
+
+    <section id="evidence">
+      <div class="section-head">
+        <div>
+          <h2>核对依据</h2>
+          <p class="section-note">本页不是凭记忆整理，下面是本次重新核对的证据。</p>
+        </div>
+      </div>
+      <div class="evidence-grid">
+        <div class="card evidence">
+          <b>测试</b>
+          <p>`.venv/bin/python -m pytest -q` 通过。</p>
+          <code>296 passed</code>
+        </div>
+        <div class="card evidence">
+          <b>dry-run 工作流</b>
+          <p>单点测量 dry-run 输出完整动作序列。</p>
+          <code>workflow single</code>
+        </div>
+        <div class="card evidence">
+          <b>代码文件</b>
+          <p>存在 PWM、light、stage、Raman workflow；未发现已实现的 mapping 模块。</p>
+          <code>src/lab_auto</code>
+        </div>
+        <div class="card evidence">
+          <b>最新提交</b>
+          <p>当前 `main` 最新提交为 M1 收尾和 M2 计划。</p>
+          <code>c3daab6</code>
+        </div>
+      </div>
+    </section>
+
+    <section id="architecture">
+      <div class="section-head">
+        <div>
+          <h2>程序架构</h2>
+          <p class="section-note">继续沿用严格分层：协议在 raw 层，上层只调用 typed Python API。</p>
+        </div>
+        <a class="source" href="superpowers/specs/2026-06-04-lab-automation-platform-design.md">来源：平台设计规格</a>
+      </div>
+
+      <div class="architecture">
+        <div class="card layers">
+          <div class="layer" style="--accent: var(--blue);">
+            <div class="layer-title">CLI<span>ramanctl</span></div>
+            <div>
+              <p>面向人和脚本的入口；真实硬件动作要求显式参数和确认。</p>
+              <div class="chips">
+                <span class="chip green">workflow single</span>
+                <span class="chip green">devices doctor</span>
+                <span class="chip green">stage/spec/camera</span>
+                <span class="chip blue">mapping 待实现</span>
+              </div>
+            </div>
+          </div>
+          <div class="layer" style="--accent: var(--teal);">
+            <div class="layer-title">Workflow<span>业务流程编排</span></div>
+            <div>
+              <p>组织实验步骤、输出目录、元数据和异常收尾。</p>
+              <div class="chips">
+                <span class="chip green">workflow/raman.py</span>
+                <span class="chip green">background subtraction</span>
+                <span class="chip red">激光安全门</span>
+                <span class="chip blue">workflow/mapping.py 待实现</span>
+              </div>
+            </div>
+          </div>
+          <div class="layer" style="--accent: var(--green);">
+            <div class="layer-title">Adapter<span>设备边界层</span></div>
+            <div>
+              <p>封装硬件能力、安全状态和错误包装。</p>
+              <div class="chips">
+                <span class="chip green">WayneLabs stage</span>
+                <span class="chip green">Zolix spectrometer</span>
+                <span class="chip green">DField camera</span>
+                <span class="chip green">PwmModbusLight</span>
+              </div>
+            </div>
+          </div>
+          <div class="layer" style="--accent: var(--purple);">
+            <div class="layer-title">Raw<span>协议与 native 绑定</span></div>
+            <div>
+              <p>唯一允许出现 DLL 函数签名、串口协议、Modbus 帧和 CRC 的地方。</p>
+              <div class="chips">
+                <span class="chip green">raw/waynelabs_protocol.py</span>
+                <span class="chip green">raw/zolix_ctypes.py</span>
+                <span class="chip green">raw/dfield_ctypes.py</span>
+                <span class="chip green">raw/pwm_modbus.py</span>
+              </div>
+            </div>
+          </div>
+          <div class="layer" style="--accent: var(--quiet);">
+            <div class="layer-title">硬件 / SDK<span>外部世界</span></div>
+            <div>
+              <p>WayneLabs 位移台、Zolix 光谱仪、DField 相机、PWM 光源控制器。</p>
+              <div class="chips">
+                <span class="chip red">需 Windows 64 位实机验收</span>
+                <span class="chip">厂家 SDK / 手册</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card flow-panel">
+          <h3>已验证的单点测量动作序列</h3>
+          <div class="flow">
+            <div class="flow-row"><div class="flow-dot">1</div><div><strong>加载配置并检查设备</strong><span>dry-run 输出 `devices_check`。</span></div></div>
+            <div class="flow-row"><div class="flow-dot">2</div><div><strong>配置光谱仪光路</strong><span>入口、出口、光栅、波长、狭缝。</span></div></div>
+            <div class="flow-row safe"><div class="flow-dot">3</div><div><strong>确认激光关闭</strong><span>采背景前必须确认安全状态。</span></div></div>
+            <div class="flow-row"><div class="flow-dot">4</div><div><strong>采背景和样品</strong><span>背景、开激光确认、样品采集。</span></div></div>
+            <div class="flow-row done"><div class="flow-dot">5</div><div><strong>扣背景并保存</strong><span>输出 metadata、raw、corrected、run log。</span></div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="status">
+      <div class="section-head">
+        <div>
+          <h2>已完成 / 未完成 / 需要实机</h2>
+          <p class="section-note">把本地已完成能力和真实硬件验收分开看。</p>
+        </div>
+      </div>
+
+      <div class="status-grid">
+        <div class="card list-card" style="--tone: var(--green); --soft: var(--green-soft);">
+          <span class="tag">已完成的内容 / 能力</span>
+          <ul>
+            <li><span><strong>Python 包与 `ramanctl` CLI</strong><br>支持 dry-run、simulated、real 模式和基础设备命令。</span></li>
+            <li><span><strong>WayneLabs 位移台封装</strong><br>串口协议、完成标记读取、软限位、坐标 ledger、安全状态。</span></li>
+            <li><span><strong>Zolix 光谱仪封装</strong><br>DLL 绑定、doctor/status/init/set 等基础能力。</span></li>
+            <li><span><strong>DField 相机封装</strong><br>SDK 绑定、FVB 采集、饱和与原始帧元数据。</span></li>
+            <li><span><strong>单点 Raman/PL 工作流</strong><br>背景采集、样品采集、扣背景、输出文件和异常收尾。</span></li>
+            <li><span><strong>PWM Modbus 光源后端</strong><br>CRC、寄存器读写、读回确认、5.0 V 上限、异常关断。</span></li>
+            <li><span><strong>测试和文档</strong><br>296 个测试通过；P1、M1、M2 计划和硬件验收清单已存在。</span></li>
+          </ul>
+        </div>
+
+        <div class="card list-card" style="--tone: var(--blue); --soft: var(--blue-soft);">
+          <span class="tag">未完成的内容</span>
+          <ul>
+            <li><span><strong>M2 Mapping 代码</strong><br>`src/lab_auto/workflow/mapping.py`、mapping config、CLI、factory wiring 尚未实现。</span></li>
+            <li><span><strong>Mapping manifest / resume</strong><br>点位状态、错误记录、断点恢复和逐点输出目录尚未落地。</span></li>
+            <li><span><strong>M2 硬件验收文档</strong><br>计划中要求创建，需在 M2 实现时一起补齐。</span></li>
+            <li><span><strong>M3 后处理增强</strong><br>峰检测、基线校正、自动曝光、批量调度未开始。</span></li>
+            <li><span><strong>M4 长会话</strong><br>daemon / shell 模式未开始；当前 CLI 仍默认无状态。</span></li>
+            <li><span><strong>M5 Agent tool schema</strong><br>权限分级和 Agent 可调用工具接口未开始。</span></li>
+            <li><span><strong>M6 HTTP 光源</strong><br>当前不作为推进目标；继续使用串口 Modbus，厂家 API 后续再说。</span></li>
+          </ul>
+        </div>
+
+        <div class="card list-card" style="--tone: var(--amber); --soft: var(--amber-soft);">
+          <span class="tag">需要实机测试 / 现场确认</span>
+          <ul>
+            <li><span><strong>Phase 1 单点流程</strong><br>位移台、光谱仪、相机、单点 workflow 需要在实验室 Windows 机器验收。</span></li>
+            <li><span><strong>M1 PWM 光源</strong><br>确认 COM 口、站号、通道映射、频率/占空比、Reg1、读回、异常关断。</span></li>
+            <li><span><strong>光源接线事实</strong><br>白光/激光实际接哪个 CH、数控电源输出端是否安全、联锁是否可读。</span></li>
+            <li><span><strong>位移台标定</strong><br>X/Y 分辨率、轴方向、软限位和实际运动方向需要现场小步验证。</span></li>
+            <li><span><strong>M2 完成后的 Mapping</strong><br>先 dry-run/simulated，再小范围实机网格扫描。</span></li>
+            <li><span><strong>现场路径</strong><br>真实 DLL 路径、串口号、MAPS 电脑环境和设备连接要核对。</span></li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="roadmap">
+      <div class="section-head">
+        <div>
+          <h2>里程碑视图</h2>
+          <p class="section-note">当前推荐继续做 M2；M6 暂不纳入近期工作。</p>
+        </div>
+        <a class="source" href="superpowers/plans/2026-06-09-lab-automation-phase2-scope.md">来源：Phase 2 范围计划</a>
+      </div>
+      <div class="roadmap">
+        <div class="milestone" style="--tone: var(--green); --soft: var(--green-soft);">
+          <span class="num">P1</span>
+          <h3>单点测量 MVP</h3>
+          <p>CLI、设备适配器、单点 workflow、dry-run/simulated。</p>
+          <div class="state">代码完成；待实机</div>
+        </div>
+        <div class="milestone" style="--tone: var(--green); --soft: var(--green-soft);">
+          <span class="num">M1</span>
+          <h3>PWM 光源后端</h3>
+          <p>串口 Modbus RTU、寄存器读回、安全状态、factory 接线。</p>
+          <div class="state">代码完成；待实机</div>
+        </div>
+        <div class="milestone" style="--tone: var(--blue); --soft: var(--blue-soft);">
+          <span class="num">M2</span>
+          <h3>Mapping 区域扫描</h3>
+          <p>网格规划、逐点采集、manifest、resume、CLI。</p>
+          <div class="state">计划完成；待实现</div>
+        </div>
+        <div class="milestone" style="--tone: var(--amber); --soft: var(--amber-soft);">
+          <span class="num">M3</span>
+          <h3>后处理增强</h3>
+          <p>峰检测、基线校正、自动曝光、批量调度。</p>
+          <div class="state">未开始</div>
+        </div>
+        <div class="milestone" style="--tone: var(--amber); --soft: var(--amber-soft);">
+          <span class="num">M4/5</span>
+          <h3>长会话与 Agent</h3>
+          <p>daemon/session、tool schema、权限系统。</p>
+          <div class="state">未开始</div>
+        </div>
+        <div class="milestone" style="--tone: var(--quiet); --soft: #eef1f4;">
+          <span class="num">M6</span>
+          <h3>HTTP 光源后端</h3>
+          <p>厂家 API 后续开放后再评估；当前路线使用串口协议。</p>
+          <div class="state">暂缓</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="hardware">
+      <div class="section-head">
+        <div>
+          <h2>实机测试清单</h2>
+          <p class="section-note">哪些必须上实验室机器，哪些可以继续在本地做。</p>
+        </div>
+      </div>
+      <div class="test-grid">
+        <div class="card test-card">
+          <h3>必须上实机</h3>
+          <ol>
+            <li><strong>Phase 1 设备验收：</strong>stage identify/move/home、devices doctor、spec status/init/set、camera status/capture、workflow single。</li>
+            <li><strong>M1 光源验收：</strong>读取 Reg1、Reg17-Reg21、目标通道频率/占空比；打开和关闭激光/白光后读回确认。</li>
+            <li><strong>安全失败路径：</strong>读回失败、频率/占空比不匹配、非目标通道开启时拒绝继续，并提示人工确认激光关闭。</li>
+            <li><strong>M2 完成后：</strong>小网格 Mapping、X/Y set-zero 或 home、软限位、manifest、resume。</li>
+          </ol>
+        </div>
+        <div class="card test-card">
+          <h3>本地还能继续做</h3>
+          <ol>
+            <li><strong>M2 dry-run/simulated 实现：</strong>不需要真机，可以先按计划完成测试驱动开发。</li>
+            <li><strong>配置和安全校验：</strong>grid 对齐、软限位、real 模式必须 `--real --yes`。</li>
+            <li><strong>manifest/resume：</strong>文件写入、失败记录、跳过已完成点可以纯本地验证。</li>
+            <li><strong>M3 数据处理：</strong>多数是离线算法，可用样例数据先开发。</li>
+          </ol>
+        </div>
+      </div>
+    </section>
+
+    <section id="docs">
+      <div class="section-head">
+        <div>
+          <h2>文档入口</h2>
+          <p class="section-note">继续开发和上机验收时优先看这些文件。</p>
+        </div>
+      </div>
+      <div class="docs">
+        <a class="doc-link" href="../README.md">
+          <b>README 当前进度</b>
+          <span>../README.md</span>
+        </a>
+        <a class="doc-link" href="superpowers/plans/2026-06-09-lab-automation-phase2-scope.md">
+          <b>Phase 2 范围与排序</b>
+          <span>docs/superpowers/plans/2026-06-09-lab-automation-phase2-scope.md</span>
+        </a>
+        <a class="doc-link" href="superpowers/plans/2026-06-13-phase2-m2-mapping-workflow.md">
+          <b>M2 Mapping 实现计划</b>
+          <span>docs/superpowers/plans/2026-06-13-phase2-m2-mapping-workflow.md</span>
+        </a>
+        <a class="doc-link" href="phase1-hardware-acceptance.md">
+          <b>Phase 1 实机验收</b>
+          <span>docs/phase1-hardware-acceptance.md</span>
+        </a>
+        <a class="doc-link" href="phase2-hardware-acceptance.md">
+          <b>M1 PWM 实机验收</b>
+          <span>docs/phase2-hardware-acceptance.md</span>
+        </a>
+        <a class="doc-link" href="superpowers/specs/2026-06-04-lab-automation-platform-design.md">
+          <b>平台设计规格</b>
+          <span>docs/superpowers/specs/2026-06-04-lab-automation-platform-design.md</span>
+        </a>
+      </div>
+    </section>
+
+    <footer>
+      <span>Updated: 2026-06-18. Source of truth remains the Markdown specs, plans, acceptance docs, and current test output.</span>
+      <span>Static HTML: no build step; open this file directly in a browser.</span>
+    </footer>
   </div>
-
-  <!-- ROADMAP -->
-  <section>
-    <div class="h"><h2>② 路线图</h2><span class="note">Phase 1 已交付；Phase 2 六个里程碑，建议先做 M1</span></div>
-    <div class="road">
-
-      <div class="card">
-        <span class="tag done">DONE</span>
-        <div class="ph">Phase 1 · MVP</div>
-        <h3>骨架 + 单点测量</h3>
-        <ul>
-          <li>ramanctl CLI · dry-run / simulated</li>
-          <li>三个硬件适配器 + raw 分层</li>
-          <li>单点 Raman/PL 工作流 + 输出</li>
-          <li>安全校验（激光 / 软限位 / 饱和）</li>
-        </ul>
-        <div class="dep"><b>状态：</b>代码完成 · 已合并 main · 待上机</div>
-      </div>
-
-      <div class="card">
-        <span class="tag active">下一个</span>
-        <div class="ph">Phase 2 · M1</div>
-        <h3>真实 PWM 光源后端</h3>
-        <ul>
-          <li>Modbus RTU（CRC · 0x03/0x06/0x10）</li>
-          <li>5.0V 硬上限 · 通道映射校验</li>
-          <li>写后读回 Reg17–21 确认</li>
-          <li>laser/led 独立状态 · 异常关断</li>
-        </ul>
-        <div class="dep"><b>风险：</b>最高（解锁全自动开关激光）</div>
-      </div>
-
-      <div class="card">
-        <span class="tag todo">TODO</span>
-        <div class="ph">Phase 2 · M2</div>
-        <h3>Mapping 区域扫描</h3>
-        <ul>
-          <li>网格扫描工作流 + CLI</li>
-          <li>硬前置：X/Y 轴 homed / user_zeroed</li>
-          <li>可中断 · 可恢复 · 可审计</li>
-        </ul>
-        <div class="dep"><b>依赖：</b>stage 安全状态机（已有）</div>
-      </div>
-
-      <div class="card">
-        <span class="tag todo">TODO</span>
-        <div class="ph">Phase 2 · M3</div>
-        <h3>采集后处理增强</h3>
-        <ul>
-          <li>峰检测 · 基线校正</li>
-          <li>自动曝光 · 批量调度</li>
-          <li>纯数据处理 · 离线可验收</li>
-        </ul>
-        <div class="dep"><b>依赖：</b>不涉真机安全</div>
-      </div>
-
-      <div class="card">
-        <span class="tag todo">TODO</span>
-        <div class="ph">Phase 2 · M4</div>
-        <h3>daemon / session 模式</h3>
-        <ul>
-          <li>ramanctl shell / daemon</li>
-          <li>跨命令保留连接（供 Agent 长会话）</li>
-          <li>不破坏现有无状态命令</li>
-        </ul>
-        <div class="dep"><b>依赖：</b>M1–M3 适配器稳定</div>
-      </div>
-
-      <div class="card">
-        <span class="tag todo">TODO</span>
-        <div class="ph">Phase 2 · M5</div>
-        <h3>Agent tool schema + 权限</h3>
-        <ul>
-          <li>CLI 能力 → Agent 可调用工具</li>
-          <li>权限分级</li>
-          <li>不得绕过安全层 / 协议字符串</li>
-        </ul>
-        <div class="dep"><b>依赖：</b>M1–M4 暴露稳定能力</div>
-      </div>
-
-      <div class="card">
-        <span class="tag todo">TODO</span>
-        <div class="ph">Phase 2 · M6</div>
-        <h3>厂家 HTTP 光源后端</h3>
-        <ul>
-          <li>M1 的同接口替代后端</li>
-          <li>同样 5.0V 上限 / 读回 / dry-run</li>
-          <li>不透传任意 HTTP 命令</li>
-        </ul>
-        <div class="dep"><b>依赖：</b>厂家 API 上线</div>
-      </div>
-
-    </div>
-  </section>
-
-  <!-- NEXT STEPS -->
-  <section>
-    <div class="h"><h2>③ 我的下一步工作</h2><span class="note">本次已完成文档对齐 + 提交 + Phase 2 范围计划</span></div>
-    <div class="next">
-      <div class="ns now">
-        <b>为 M1（PWM 光源后端）写 task-by-task TDD 实现计划</b>
-        <div class="d">类似 Phase 1 那份逐步计划：文件结构、失败测试先行、安全联锁分步落地、dry-run 验收命令。等你点头即可开工。</div>
-      </div>
-      <div class="ns">
-        <b>实现 M1：raw 层 → 适配器 → 配置 → factory 接线</b>
-        <div class="d">Modbus 帧 / CRC / 读回校验全部用可注入 transport 做 simulated，在 macOS 上完整测试，不依赖真机。</div>
-      </div>
-      <div class="ns">
-        <b>同步收集光源待确认信息（不阻塞开发）</b>
-        <div class="d">向老师/厂家确认：白光/激光通道映射、COM 口、站号、频率/占空比、接线安全、激光联锁可读性 —— 用于后续真机验收。</div>
-      </div>
-      <div class="ns">
-        <b>M1 完成后决定 M2 / M3 先后</b>
-        <div class="d">近期要做面扫描 → 优先 M2；先要数据质量 → 优先 M3。</div>
-      </div>
-    </div>
-  </section>
-
-  <footer>
-    <div class="legend">
-      <span><span class="dot" style="background:var(--done)"></span>已完成</span>
-      <span><span class="dot" style="background:var(--active)"></span>进行中 / 下一个</span>
-      <span><span class="dot" style="background:var(--todo)"></span>待办</span>
-      <span><span class="dot" style="background:var(--safe)"></span>安全关卡</span>
-    </div>
-    详细 Markdown（供 Agent 阅读）：docs/superpowers/specs/2026-06-04-…design.md ·
-    plans/2026-06-04-…phase1-mvp.md · plans/2026-06-09-…phase2-scope.md · docs/phase1-hardware-acceptance.md
-  </footer>
-
-</div>
 </body>
 </html>
