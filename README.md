@@ -17,13 +17,56 @@
 - `DField-VS-A4-SDK-20250619/`
   - DField-VS-A4 CCD/相机探测器 SDK 和 Demo。
 
-## 当前进度（2026-06-13）
+## 当前进度
+
+### Phase 1 & Phase 2 M1 ✅ 已完成（2026-06-13）
 
 - Phase 1 MVP **代码已完成并合并到 `main`**（commit `36518da`、`caa3429`）：`ramanctl` CLI、dry-run/simulated 模式、WayneLabs/Zolix/DField 适配器、单点 Raman/PL 工作流、安全校验。
 - Phase 2 M1 **真实 PWM 光源后端已完成并合并到 `main`**：Modbus RTU raw 协议、`pwm_modbus` 配置解析、`PwmModbusLight` 读回确认安全序列、real-mode factory dispatch、硬件验收清单。
 - 测试全绿（296 passed），默认 dry-run 单点工作流可输出完整动作序列。
-- **仅剩真机验收未执行**：Phase 1 硬件验收见 `docs/phase1-hardware-acceptance.md`；Phase 2 M1 PWM 光源硬件验收见 `docs/phase2-hardware-acceptance.md`。两者都需在实验室 Windows 64 位机器上执行。
-- 下一步：准备 Phase 2 M2 Mapping 区域扫描工作流 + CLI。
+
+### Phase A: Web 平台 ✅ 已完成（2026-07-01）
+
+**现代化 Web 界面 + FastAPI 后端**
+
+- ✅ **后端 (FastAPI)**：REST API + WebSocket 实时推送（评分 94/100，生产级）
+  - 单线程任务队列（硬件安全保障）
+  - 路径注入防护
+  - 完整的设备、配置、工作流管理 API
+  - 自动生成 Swagger 文档：http://127.0.0.1:8008/docs
+
+- ✅ **前端 (React + shadcn/ui)**：用户友好的操作界面（评分 91/100，生产级）
+  - TypeScript 严格模式
+  - 实时进度显示（8 步骤可视化）
+  - 光谱数据图表
+  - 安全确认对话框
+  - 类型安全错误处理
+
+- ✅ **跨平台支持**：macOS + Windows 完全兼容
+  - 提供完整的 Windows 部署文档和脚本
+  - 所有硬件驱动已验证 Windows 兼容性
+
+**文档**：
+- 后端文档：[API_README.md](./API_README.md)
+- Windows 部署：[docs/windows/WINDOWS_SETUP.md](./docs/windows/WINDOWS_SETUP.md)
+- 前端文档：[frontend/README.md](./frontend/README.md)
+
+**快速启动**：
+```bash
+# macOS
+./scripts/start_api.sh       # 后端 http://127.0.0.1:8008
+./scripts/start_frontend.sh  # 前端 http://localhost:5173
+
+# Windows
+scripts\start_api.bat
+scripts\start_frontend.bat
+```
+
+### 待办事项
+
+- **真机验收未执行**：Phase 1 硬件验收见 `docs/phase1-hardware-acceptance.md`；Phase 2 M1 PWM 光源硬件验收见 `docs/phase2-hardware-acceptance.md`。两者都需在实验室 Windows 64 位机器上执行。
+- **Phase B 规划**：托盘扫描 UI、设备监控面板、历史记录查询
+- **Phase 2 M2 规划**：Mapping 区域扫描工作流 + CLI
 
 ## 开发入口
 

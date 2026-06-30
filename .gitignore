@@ -9,6 +9,18 @@ output/
 state/
 logs/
 
+# Claude agent cache
+.agents/
+
+# Skills lock file
+skills-lock.json
+
+# Node.js
+node_modules/
+dist/
+*.log
+npm-debug.log*
+
 # Python caches and local environments
 __pycache__/
 *.py[cod]
