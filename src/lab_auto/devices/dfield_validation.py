@@ -6,6 +6,12 @@ from lab_auto.errors import ConfigError
 
 MAX_BIN_X = 64
 MAX_BIN_Y = 129
+# Hard safety caps. In real mode the laser stays on for the whole sample capture
+# (exposure_ms x frames), and the DLL call is a blocking, non-interruptible ctypes
+# call on the single hardware worker — a fat-fingered extra zero must be rejected
+# up front, not discovered as a stuck queue with the laser dwelling on the sample.
+MAX_EXPOSURE_MS = 60_000
+MAX_FRAMES = 1000
 
 
 def _is_integer(value) -> bool:
@@ -77,6 +83,10 @@ def validate_dfield_capture_args(
         raise ConfigError(f"unsupported DField gain: {gain}")
     if not _is_finite_number(exposure_ms) or exposure_ms <= 0:
         raise ConfigError("--exposure-ms must be positive")
+    if exposure_ms > MAX_EXPOSURE_MS:
+        raise ConfigError(f"--exposure-ms exceeds the safety cap of {MAX_EXPOSURE_MS} ms (60 s)")
     if not _is_integer(frames) or frames < 1:
         raise ConfigError("frames must be at least 1")
+    if frames > MAX_FRAMES:
+        raise ConfigError(f"frames exceeds the safety cap of {MAX_FRAMES}")
     validate_dfield_bin_roi(bin_x=bin_x, bin_y=bin_y, roi=roi)

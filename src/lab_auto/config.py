@@ -25,6 +25,7 @@ class StageConfig:
     soft_limits_um: dict[str, list[float]]
     state_file: Path
     max_unknown_move_um: float
+    home_direction: str | None = None
 
 
 @dataclass(frozen=True)
@@ -258,6 +259,14 @@ def _soft_limits_um(value: Any) -> dict[str, list[float]]:
     return limits
 
 
+def _parse_home_direction(value: Any) -> str | None:
+    if value is None:
+        return None
+    if value not in ("positive", "negative"):
+        raise ConfigError("stage home_direction must be 'positive', 'negative', or omitted")
+    return value
+
+
 def _validate_stage_axes(resolution: dict[str, float], soft_limits: dict[str, list[float]]) -> None:
     for field, mapping in (("resolution_um", resolution), ("soft_limits_um", soft_limits)):
         missing = [axis for axis in _REQUIRED_AXES if axis not in mapping]
@@ -333,6 +342,7 @@ def load_devices_config(path: str | Path) -> DevicesConfig:
                 soft_limits_um=soft_limits_um,
                 state_file=Path(stage["state_file"]),
                 max_unknown_move_um=_finite_float(stage["max_unknown_move_um"], field="max_unknown_move_um"),
+                home_direction=_parse_home_direction(stage.get("home_direction")),
             ),
             spectrometer=SpectrometerConfig(
                 type=str(spectrometer["type"]),
@@ -454,8 +464,10 @@ def _parse_pattern(pattern: Any) -> ScanPattern:
     )
     if result.repeats_per_point < 2:
         raise ConfigError("pattern.repeats_per_point must be >= 2 for a burn check")
-    if result.burn_threshold < 0:
-        raise ConfigError("pattern.burn_threshold must be >= 0")
+    if result.burn_threshold <= 0:
+        # A threshold of 0 would flag every point as burned (any nonzero deviation
+        # between repeats exceeds it), silently poisoning the whole manifest.
+        raise ConfigError("pattern.burn_threshold must be > 0")
     if result.surrounding_count != len(result.surrounding_angles_deg):
         raise ConfigError("pattern.surrounding_count must equal len(surrounding_angles_deg)")
     if result.surrounding_count > 0 and result.surrounding_distance_um <= 0:

@@ -1,5 +1,6 @@
 import json
 import math
+import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -28,6 +29,10 @@ class AxisState(str, Enum):
 class PositionLedger:
     states: dict[str, AxisState] = field(default_factory=lambda: {"x": AxisState.UNKNOWN, "y": AxisState.UNKNOWN, "z": AxisState.UNKNOWN})
     position_um: dict[str, float] = field(default_factory=lambda: {"x": 0.0, "y": 0.0, "z": 0.0})
+    # Axes with a move/home command in flight. Persisted BEFORE the motor starts
+    # and cleared only after it completes, so a crash mid-move leaves a marker that
+    # forces the axis back to UNKNOWN on the next load (position no longer trusted).
+    in_flight: dict[str, dict] = field(default_factory=dict)
 
     @classmethod
     def load(cls, config: StageConfig) -> "PositionLedger":
@@ -45,23 +50,38 @@ class PositionLedger:
             position_um = {axis: float(value) for axis, value in data["position_um"].items()}
             if any(not math.isfinite(value) for value in position_um.values()):
                 return cls()
+            # Back-compat: older ledgers have no in_flight field.
+            in_flight = data.get("in_flight") or {}
+            if not isinstance(in_flight, dict):
+                in_flight = {}
+            # An axis whose move/home never completed cannot be trusted: the motor
+            # may have moved after the last persisted position. Force it UNKNOWN.
+            for axis in in_flight:
+                if axis in states:
+                    states[axis] = AxisState.UNKNOWN
             for axis, state in states.items():
                 if state is not AxisState.UNKNOWN and axis not in position_um:
                     return cls()
             return cls(
                 states=states,
                 position_um=position_um,
+                in_flight=dict(in_flight),
             )
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             return cls()
 
     def save(self, config: StageConfig) -> None:
         config.state_file.parent.mkdir(parents=True, exist_ok=True)
-        config.state_file.write_text(
+        # Atomic: write a sibling temp file then os.replace it in, so a crash/power
+        # loss mid-write leaves the previous complete ledger intact (write_text
+        # truncates first, so a partial write would otherwise be unloadable).
+        tmp = config.state_file.with_name(config.state_file.name + ".tmp")
+        tmp.write_text(
             json.dumps(
                 {
                     "states": {axis: state.value for axis, state in self.states.items()},
                     "position_um": self.position_um,
+                    "in_flight": self.in_flight,
                     "resolution_um": config.resolution_um,
                     "last_updated": datetime.now(timezone.utc).isoformat(),
                     "device_identity": {"type": config.type, "port": config.port},
@@ -70,6 +90,7 @@ class PositionLedger:
             ),
             encoding="utf-8",
         )
+        os.replace(tmp, config.state_file)
 
 
 class WaynelabsStage:
@@ -153,9 +174,18 @@ class WaynelabsStage:
             return self.protocol.parse_completion(text[index : index + 2])
         return None
 
+    def _reset_input_buffer(self) -> None:
+        # Drop stale/late bytes before writing a command, so a prior response or a
+        # noise byte can't be misread as this command's completion. getattr-guarded
+        # so transports without the method (or None) are a no-op.
+        reset = getattr(self.transport, "reset_input_buffer", None)
+        if reset is not None:
+            reset()
+
     def _send_command(self, command: str, *, timeout_s: float) -> Completed | LimitOrHome | None:
         if self.dry_run or self.transport is None:
             return None
+        self._reset_input_buffer()
         try:
             self.transport.write(command.encode("ascii"))
         except Exception as exc:
@@ -221,6 +251,7 @@ class WaynelabsStage:
 
     def _mark_axis_unknown(self, axis: str) -> None:
         self.ledger.states[axis] = AxisState.UNKNOWN
+        self.ledger.in_flight.pop(axis, None)
         self._save_ledger()
 
     def move_relative(self, *, axis: str, um: float, speed: int) -> list[str]:
@@ -241,6 +272,11 @@ class WaynelabsStage:
             ]
         except ProtocolError as exc:
             raise ConfigError(str(exc)) from exc
+        if not self.dry_run:
+            # Two-phase: persist the in-flight marker BEFORE the motor starts. If we
+            # are killed mid-move, load() forces this axis UNKNOWN (position stale).
+            self.ledger.in_flight[axis] = {"commanded_um": commanded_um}
+            self._save_ledger()
         for command in commands:
             try:
                 result = self._send_command(command, timeout_s=WAYNELABS_MOVE_TIMEOUT_S)
@@ -257,15 +293,18 @@ class WaynelabsStage:
                 raise DeviceError(f"WayneLabs move completed in unexpected direction for axis {axis}")
         if self.dry_run:
             return commands
+        # Move complete: commit the new position (known axes) and clear in-flight.
         if self.ledger.states.get(axis, AxisState.UNKNOWN) is not AxisState.UNKNOWN:
             self.ledger.position_um[axis] = self.ledger.position_um[axis] + commanded_um
-            self._save_ledger()
+        self.ledger.in_flight.pop(axis, None)
+        self._save_ledger()
         return commands
 
     def identify(self) -> dict:
         if self.dry_run or self.transport is None:
             return {"type": self.config.type, "port": self.config.port}
         command = self.protocol.build_identify_command()
+        self._reset_input_buffer()
         try:
             self.transport.write(command.encode("ascii"))
         except Exception as exc:
@@ -283,10 +322,23 @@ class WaynelabsStage:
     def home(self, *, axis: str, direction: str, speed: int) -> list[str]:
         self._assert_linear_controller()
         self._assert_axis_supported(axis)
+        # A limit hit in EITHER direction returns the same "?t" marker, so homing the
+        # wrong way records the far limit as origin 0.0 and inverts the whole axis
+        # (soft limits then guard the wrong side). Refuse any direction that doesn't
+        # match the configured, on-rig-verified safe home direction.
+        if self.config.home_direction is not None and direction != self.config.home_direction:
+            raise SafetyError(
+                f"home direction {direction!r} does not match the configured safe home "
+                f"direction {self.config.home_direction!r} for axis {axis}"
+            )
         try:
             command = self.protocol.build_home_command(axis=axis, speed=speed, direction=direction)
         except ProtocolError as exc:
             raise ConfigError(str(exc)) from exc
+        if not self.dry_run:
+            # Two-phase: mark in-flight before the motor starts (see move_relative).
+            self.ledger.in_flight[axis] = {"home": True, "direction": direction}
+            self._save_ledger()
         try:
             result = self._send_command(command, timeout_s=WAYNELABS_HOME_TIMEOUT_S)
         except DeviceError:
@@ -299,6 +351,7 @@ class WaynelabsStage:
             raise DeviceError(f"WayneLabs home did not report home completion for axis {axis}")
         self.ledger.states[axis] = AxisState.HOMED
         self.ledger.position_um[axis] = 0.0
+        self.ledger.in_flight.pop(axis, None)
         self._save_ledger()
         return [command]
 

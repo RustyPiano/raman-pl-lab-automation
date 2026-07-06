@@ -30,7 +30,8 @@ export function SinglePoint() {
 
   const { currentJob, startSinglePoint, stopJob, clearLogs } = useWorkflowStore();
 
-  const isRunning = currentJob?.status === 'running' || currentJob?.status === 'pending';
+  const isRunning = currentJob?.status === 'running' || currentJob?.status === 'pending' || currentJob?.status === 'stopping';
+  const isStopping = currentJob?.status === 'stopping';
 
   // Load configs on mount
   useEffect(() => {
@@ -192,12 +193,13 @@ export function SinglePoint() {
             ) : (
               <Button
                 onClick={handleStop}
+                disabled={isStopping}
                 variant="destructive"
                 className="text-lg py-6 flex-1"
                 size="lg"
               >
                 <Square className="mr-2 h-5 w-5" />
-                停止测量
+                {isStopping ? '正在停止（等待硬件安全收尾）…' : '停止测量'}
               </Button>
             )}
           </div>

@@ -38,11 +38,19 @@ uvicorn lab_auto.api.main:app --host 127.0.0.1 --port 8008 --reload
 
 ### 设备管理 (`/api/devices`)
 
-- `GET /api/devices/status` - 获取所有设备状态
-- `POST /api/devices/scan` - 扫描可用设备
-- `GET /api/devices/light/status` - 获取激光/LED 状态
-- `POST /api/devices/light/on` - 开启激光（带安全检查）
-- `POST /api/devices/light/off` - 关闭激光
+- `GET /api/devices/status` - 获取所有设备状态（任务运行中返回 409）
+- `POST /api/devices/scan` - 扫描可用设备（任务运行中返回 409）
+- `GET /api/devices/light/status` - 获取激光/LED 状态（只读寄存器回读，不写任何通道；任务运行中返回 409）
+- `POST /api/devices/light/off` - 强制关闭全部光源通道（读回确认；任务运行中会先取消所有任务再关灯）
+
+> 注意：`POST /api/devices/light/on` 已移除。无认证的裸激光开启端点是 CSRF 攻击面；
+> 激光只能通过带确认的工作流（`mode="real"` + `confirm_real=true`）开启。
+
+### 系统安全 (`/api`)
+
+- `POST /api/emergency-stop` - 软件级紧急停止：取消所有任务 + 尽力强制关闭光源。
+  响应中的 `laser_off` 字段如实报告 `confirmed` / `failed: <原因>` / `not_applicable`；
+  失败时请立即使用物理开关。软件急停不能替代物理急停按钮。
 
 ### 配置管理 (`/api/configs`)
 
@@ -55,7 +63,8 @@ uvicorn lab_auto.api.main:app --host 127.0.0.1 --port 8008 --reload
 - `POST /api/workflow/single-point` - 启动单点 Raman 测量
 - `GET /api/workflow/jobs` - 列出所有任务
 - `GET /api/workflow/jobs/{job_id}` - 获取任务详情
-- `POST /api/workflow/jobs/{job_id}/stop` - 停止任务
+- `POST /api/workflow/jobs/{job_id}/stop` - 停止任务（协作式取消：pending 立即停止；
+  running 进入 `stopping` 状态，工作流在下一个检查点安全收尾（含强制关激光）后才变为 `stopped`）
 - `WS /api/workflow/ws/jobs/{job_id}` - WebSocket 实时进度推送
 
 ## 使用示例

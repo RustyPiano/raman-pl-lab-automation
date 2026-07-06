@@ -22,6 +22,17 @@ from lab_auto.errors import DeviceError
 PWM_MODBUS_READ_TIMEOUT_S = 1.0
 
 
+class _ExchangeError(DeviceError):
+    """Retryable Modbus exchange failure: a read timeout or an unparseable frame.
+
+    A single late/stray byte left in the OS buffer after a prior timeout desyncs
+    the RTU stream, so the next response is misread. These failures are retried
+    once (flush + resend) by ``_retry_exchange``. A transport WRITE failure is a
+    plain ``DeviceError`` instead, so it is never retried. Subclasses
+    ``DeviceError`` so a retry that still fails surfaces uniformly.
+    """
+
+
 class ManualLight:
     def __init__(self, *, manual: bool):
         self.manual = manual
@@ -87,10 +98,50 @@ class PwmModbusLight:
     def get_state(self) -> dict:
         return {"laser_state": self.laser_state, "led_state": self.led_state}
 
-    def close(self) -> None:
+    def read_hardware_state(self) -> dict:
+        """Side-effect-free register read-back for status endpoints.
+
+        Reads Reg1 (voltage) and the 5 output-state registers straight from the
+        controller (no channel writes), so a read-only status query reflects real
+        hardware rather than only the software state machine. dry_run returns the
+        software state.
+        """
+        if self.dry_run:
+            return {"laser_state": self.laser_state, "led_state": self.led_state}
+        voltage = self._read(VOLTAGE_REGISTER, 1)[0]
+        states = self._read(output_state_register(1), 5)
+        channel_states = dict(zip(self._ALL_CHANNELS, states))
+        return {
+            "voltage_register": voltage,
+            "channel_states": channel_states,
+            "laser_state": self.laser_state,
+            "led_state": self.led_state,
+        }
+
+    def safety_reset(self) -> None:
+        """Force every channel off with read-back confirmation (power-on / e-stop).
+
+        Reused as the power-on safety reset in the factory and for any emergency
+        stop path. Raises ``DeviceError`` if a CONFIGURED channel cannot be
+        confirmed OFF.
+        """
+        if self.dry_run:
+            self.laser_state = "off_confirmed"
+            self.led_state = "off_confirmed"
+            return
+        failures = self._all_off_with_retry()
+        if failures:
+            self.laser_state = "manual_wait"
+            raise DeviceError(f"power-on safety reset failed to confirm channels OFF: {sorted(failures)}")
+        self.laser_state = "off_confirmed"
+        self.led_state = "off_confirmed"
+
+    def close(self, *, all_off: bool = True) -> None:
         # Safety net: force every channel off before dropping the transport, so a
         # failure path that left the laser on gets one last chance to turn it off.
-        if not self.dry_run:
+        # ``all_off=False`` is for read-only status teardown that must not touch
+        # any channel.
+        if all_off and not self.dry_run:
             try:
                 self._all_off()
             except Exception:  # noqa: BLE001 - teardown must never be blocked
@@ -119,7 +170,7 @@ class PwmModbusLight:
         if self.dry_run:
             self.laser_state = "off_confirmed"
             return
-        failures = self._all_off()
+        failures = self._all_off_with_retry()
         if failures:
             self.laser_state = "manual_wait"
             raise DeviceError(f"failed to confirm laser OFF for channels: {sorted(failures)}")
@@ -130,7 +181,7 @@ class PwmModbusLight:
         if self.dry_run:
             self.led_state = "off_confirmed"
             return
-        failures = self._all_off()
+        failures = self._all_off_with_retry()
         if failures:
             self.led_state = "manual_wait"
             raise DeviceError(f"failed to confirm LED OFF for channels: {sorted(failures)}")
@@ -224,32 +275,72 @@ class PwmModbusLight:
                 failures.add(channel)
         return failures
 
+    def _all_off_with_retry(self) -> set[int]:
+        # After a de-sync the whole first sweep can fail; flush any stale bytes and
+        # retry the full off-sweep once before declaring manual_wait. This is the
+        # main "laser won't turn off after one stray byte" self-heal.
+        failures = self._all_off()
+        if failures:
+            self._reset_input_buffer()
+            failures = self._all_off()
+        return failures
+
     def _read(self, address: int, count: int) -> list[int]:
         try:
             request = build_read_request(station=self.station, address=address, count=count)
         except ProtocolError as exc:
             raise DeviceError(f"PWM modbus read request invalid: {exc}") from exc
-        frame = self._exchange(request, expected_len=expected_read_response_len(count))
-        try:
-            return parse_read_response(frame, station=self.station, function=READ, count=count)
-        except ProtocolError as exc:
-            raise DeviceError(f"PWM modbus read response invalid: {exc}") from exc
+        expected_len = expected_read_response_len(count)
+
+        def attempt() -> list[int]:
+            frame = self._exchange(request, expected_len=expected_len)
+            try:
+                return parse_read_response(frame, station=self.station, function=READ, count=count)
+            except ProtocolError as exc:
+                raise _ExchangeError(f"PWM modbus read response invalid: {exc}") from exc
+
+        return self._retry_exchange(attempt)
 
     def _write_single(self, address: int, value: int) -> None:
         try:
             request = build_write_single_request(station=self.station, address=address, value=value)
         except ProtocolError as exc:
             raise DeviceError(f"PWM modbus write request invalid: {exc}") from exc
-        frame = self._exchange(request, expected_len=8)
+
+        def attempt() -> None:
+            frame = self._exchange(request, expected_len=8)
+            try:
+                parse_write_ack(frame, station=self.station, function=WRITE_SINGLE, address=address, value=value)
+            except ProtocolError as exc:
+                raise _ExchangeError(f"PWM modbus write acknowledgement invalid: {exc}") from exc
+
+        self._retry_exchange(attempt)
+
+    def _retry_exchange(self, attempt):
+        # Modbus RTU self-heal: a stale/late byte from a prior timeout desyncs the
+        # stream so the response times out or fails to parse. Flush the input buffer
+        # and retry the whole exchange ONCE; without this every following exchange
+        # (including the 5-channel laser_off sweep) keeps failing and the laser can
+        # never be turned off in software. Only ``_ExchangeError`` (read/parse) is
+        # retried -- a transport WRITE failure is a plain DeviceError and is not.
         try:
-            parse_write_ack(frame, station=self.station, function=WRITE_SINGLE, address=address, value=value)
-        except ProtocolError as exc:
-            raise DeviceError(f"PWM modbus write acknowledgement invalid: {exc}") from exc
+            return attempt()
+        except _ExchangeError:
+            self._reset_input_buffer()
+            return attempt()
+
+    def _reset_input_buffer(self) -> None:
+        # Drop late/stray bytes still in the OS buffer before writing a fresh
+        # request. getattr-guarded so fakes without the method are a no-op.
+        reset = getattr(self.transport, "reset_input_buffer", None)
+        if reset is not None:
+            reset()
 
     def _exchange(self, request: bytes, *, expected_len: int) -> bytes:
+        self._reset_input_buffer()
         try:
             self.transport.write(request)
-        except Exception as exc:  # noqa: BLE001 - surface any transport failure uniformly
+        except Exception as exc:  # noqa: BLE001 - write failure is surfaced but never retried
             raise DeviceError(f"PWM modbus write failed: {exc}") from exc
         header = self._read_exact(2)
         if header[1] & 0x80:
@@ -262,12 +353,14 @@ class PwmModbusLight:
         deadline = time.monotonic() + PWM_MODBUS_READ_TIMEOUT_S
         buffer = bytearray()
         while len(buffer) < n:
+            # Check the deadline every iteration, not only on empty reads, so a slow
+            # drip of one byte per read still times out instead of stalling forever.
+            if time.monotonic() > deadline:
+                raise _ExchangeError("PWM modbus read timed out")
             try:
                 chunk = self.transport.read(n - len(buffer))
             except Exception as exc:  # noqa: BLE001
-                raise DeviceError(f"PWM modbus read failed: {exc}") from exc
+                raise _ExchangeError(f"PWM modbus read failed: {exc}") from exc
             if chunk:
                 buffer += chunk
-            elif time.monotonic() > deadline:
-                raise DeviceError("PWM modbus read timed out")
         return bytes(buffer)

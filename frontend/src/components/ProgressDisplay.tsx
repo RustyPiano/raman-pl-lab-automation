@@ -14,6 +14,7 @@ export function ProgressDisplay() {
   const statusColor = {
     pending: 'text-gray-500',
     running: 'text-blue-600',
+    stopping: 'text-amber-600',
     completed: 'text-green-600',
     failed: 'text-red-600',
     stopped: 'text-amber-600',
@@ -22,6 +23,7 @@ export function ProgressDisplay() {
   const statusEmoji = {
     pending: '⏳',
     running: '▶️',
+    stopping: '🟡',
     completed: '✅',
     failed: '❌',
     stopped: '⏹️',

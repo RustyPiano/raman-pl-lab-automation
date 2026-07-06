@@ -15,7 +15,7 @@ from lab_auto.config import (
     TrayScanConfig,
 )
 from lab_auto.devices.waynelabs_stage import AxisState
-from lab_auto.errors import ConfigError, SafetyError
+from lab_auto.errors import ConfigError, SafetyError, WorkflowCancelled
 from lab_auto.scan.pattern import measurement_points
 from lab_auto.scan.tray import wafer_centers
 from lab_auto.vision.calibration import pixel_to_stage_delta
@@ -232,6 +232,33 @@ def test_manifest_written_and_structured(tmp_path):
     assert roles == ["center", "surrounding_0"]
     for p in center["points"]:
         assert "x_um" in p and "y_um" in p and "status" in p
+
+
+def test_run_cancel_midway_preserves_completed_points(tmp_path):
+    # Cancel after the first measurement point completes; the atomic per-point write
+    # must leave that point persisted for a resume, and the second point unmeasured.
+    pattern = ScanPattern(repeats_per_point=2, burn_metric="relative_l2", burn_threshold=0.5,
+                          surrounding_count=1, surrounding_distance_um=10.0, surrounding_angles_deg=[0.0])
+    cfg = _config(tray=_tray_1x1(), pattern=pattern, calibration=_calib(), output_dir=tmp_path)
+    cancel = {"stop": False}
+
+    class CancelingMeasurer(FakeMeasurer):
+        def measure_point(self, **kwargs):
+            result = super().measure_point(**kwargs)
+            cancel["stop"] = True  # request a stop once the first point starts measuring
+            return result
+
+    measurer = CancelingMeasurer(lambda r, n: [1.0, 1.0])
+    wf = TrayScanWorkflow.real(cfg, stage=_homed_stage(), point_measurer=measurer, mask_provider=lambda w: ONE_BLOB)
+
+    with pytest.raises(WorkflowCancelled):
+        wf.run(require_confirmation=False, should_cancel=lambda: cancel["stop"])
+
+    manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    points = manifest["wafers"][0]["centers"][0]["points"]
+    assert [p["role"] for p in points] == ["center"]  # surrounding_0 never measured
+    assert points[0]["status"] == "done"
+    assert len(points[0]["outputs"]) == 2  # first point fully completed and persisted
 
 
 def test_resume_skips_completed_points(tmp_path):

@@ -10,10 +10,11 @@ scan pattern, burn check). Writes an interruptible/resumable manifest.
 import json
 import math
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from lab_auto.config import TrayScanConfig
-from lab_auto.errors import ConfigError, SafetyError
+from lab_auto.errors import ConfigError, SafetyError, WorkflowCancelled
 from lab_auto.processing.burn_check import compare_spectra
 from lab_auto.scan.pattern import measurement_points
 from lab_auto.scan.tray import wafer_centers
@@ -152,7 +153,14 @@ class TrayScanWorkflow:
 
     # -- run -------------------------------------------------------------
 
-    def run(self, *, require_confirmation: bool) -> dict:
+    def run(self, *, require_confirmation: bool, should_cancel: Callable[[], bool] | None = None) -> dict:
+        def _check_cancel() -> None:
+            # Each completed point is persisted before the next checkpoint (atomic
+            # per-point write below), so cancelling here always leaves a manifest on
+            # disk that retains every finished point for a later resume.
+            if should_cancel is not None and should_cancel():
+                raise WorkflowCancelled("tray scan cancelled by stop request")
+
         self._assert_stage_ready()
         self.config.output.directory.mkdir(parents=True, exist_ok=True)
         manifest_path = self.config.output.directory / "manifest.json"
@@ -162,6 +170,7 @@ class TrayScanWorkflow:
             if wafer.index in completed_wafers:
                 continue  # resume: don't re-image or re-drive a finished wafer
             wafer_entry = self._wafer_entry(manifest, wafer)
+            _check_cancel()  # before moving the stage to the wafer
             self._move_to(wafer.x_um, wafer.y_um)
             centers = self._resume_or_detect_centers(wafer, wafer_entry, manifest_path, manifest)
             if not centers:
@@ -178,10 +187,12 @@ class TrayScanWorkflow:
                     key = f"{wafer.index}:{center.label}:{role}"
                     if key in done:
                         continue
+                    _check_cancel()  # before starting a new measurement point
                     point = self._measure_point(wafer, center, role, x, y, require_confirmation)
                     center_entry["points"].append(point)
                     done.add(key)
                     self._write_manifest(manifest_path, manifest)
+                _check_cancel()  # before moving back to the wafer center
                 self._move_to(wafer.x_um, wafer.y_um)  # return after each sample
             wafer_entry["status"] = "done"  # mark complete so a resume skips it
             self._write_manifest(manifest_path, manifest)

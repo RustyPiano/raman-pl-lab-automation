@@ -7,6 +7,8 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from lab_auto.api.models import JobStatus, SinglePointRequest
 from lab_auto.api.task_queue import task_queue
 from lab_auto.api.websocket import manager
+from lab_auto.config import load_workflow_and_devices
+from lab_auto.errors import ConfigError
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/workflow", tags=["workflow"])
@@ -26,8 +28,33 @@ async def start_single_point(request: SinglePointRequest):
             if not devices_path.exists():
                 raise HTTPException(status_code=404, detail=f"Devices config not found: {request.devices_path}")
 
+        if request.confirm_real and request.mode != "real":
+            raise HTTPException(
+                status_code=400,
+                detail="confirm_real=true is only valid in real mode",
+            )
+
         if request.mode == "real" and not request.confirm_real:
             raise HTTPException(status_code=400, detail="Real mode requires confirm_real=true")
+
+        if request.mode == "real":
+            # Reject a manual light source up front: its terminal confirmation
+            # prompt (input()) would hang the server thread. Web real mode needs
+            # a pwm_modbus source with programmatic laser control.
+            try:
+                _, devices_config = load_workflow_and_devices(
+                    request.config_path, devices_override=request.devices_path
+                )
+            except ConfigError as e:
+                raise HTTPException(status_code=400, detail=f"Invalid configuration: {e}")
+            if devices_config.light.type == "manual":
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Web API real mode requires a pwm_modbus light source; a manual light "
+                        "needs terminal confirmation which would hang the server"
+                    ),
+                )
 
         # Create job
         job_id = task_queue.create_job("single_point")
@@ -71,11 +98,17 @@ async def get_job(job_id: str):
 
 @router.post("/jobs/{job_id}/stop")
 async def stop_job(job_id: str):
-    """Stop a running job."""
+    """Request a job to stop.
+
+    A pending job stops immediately; a running job transitions to ``stopping``
+    and only becomes ``stopped`` once the workflow halts at a checkpoint. The
+    response reports the job's actual status, not a blanket "stopped".
+    """
     success = await task_queue.stop_job(job_id)
     if not success:
         raise HTTPException(status_code=400, detail="Job cannot be stopped (not found or already completed)")
-    return {"status": "stopped", "job_id": job_id}
+    job = task_queue.get_job(job_id)
+    return {"status": job.status if job else "stopping", "job_id": job_id}
 
 
 @router.websocket("/ws/jobs/{job_id}")

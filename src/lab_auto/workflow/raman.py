@@ -1,5 +1,6 @@
 import csv
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,7 +12,7 @@ from lab_auto.devices.optics_validation import validate_zolix_optics
 from lab_auto.devices.light import ManualLight
 from lab_auto.devices.simulated import SimulatedCamera, SimulatedSpectrometer
 from lab_auto.devices.zolix_spectrometer import direct_to_front_bool
-from lab_auto.errors import ConfigError, SafetyError
+from lab_auto.errors import ConfigError, SafetyError, WorkflowCancelled
 from lab_auto.logging import append_run_log
 from lab_auto.processing.background import subtract_background
 from lab_auto.workflow.data import CaptureFrame, SpectrumData
@@ -127,7 +128,16 @@ class RamanWorkflow:
             metadata=metadata,
         )
 
-    def run_single_point(self, *, require_confirmation: bool) -> Path:
+    def run_single_point(
+        self,
+        *,
+        require_confirmation: bool,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> Path:
+        def _check_cancel() -> None:
+            if should_cancel is not None and should_cancel():
+                raise WorkflowCancelled("single-point workflow cancelled by stop request")
+
         print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         print("🔬 开始单点光谱采集流程")
         print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -135,6 +145,9 @@ class RamanWorkflow:
         print("\n[1/8] 验证配置参数...")
         self.validate_single_point_config()
         print("✓ 配置验证通过")
+        # Checkpoint: cancel here is before any hardware/laser action and before the
+        # run directory is created — nothing to make safe, just abort cleanly.
+        _check_cancel()
 
         timestamp = datetime.now(timezone.utc)
         run_dir = self.config.output.directory / f"{timestamp.strftime('%Y%m%d-%H%M%S-%f')}-{self.config.sample.id}"
@@ -143,6 +156,9 @@ class RamanWorkflow:
 
         laser_off_after_sample = False
         try:
+            # Checkpoint: cancel from here on routes through the except path below,
+            # which forces the laser off before re-raising.
+            _check_cancel()
             print("\n[2/8] 配置光谱仪...")
             print(f"  - 光栅: {self.config.optics.grating}")
             print(f"  - 中心波长: {self.config.optics.center_wavelength_nm} nm")
@@ -155,6 +171,7 @@ class RamanWorkflow:
                 print("\n[3/8] 采集背景光谱...")
                 print(f"  - 曝光时间: {self.config.acquisition.exposure_ms} ms")
                 print(f"  - 帧数: {self.config.acquisition.frames}")
+                _check_cancel()
                 self._confirm_laser_off(require_confirmation=require_confirmation or self.runtime_mode == "real")
                 print("  > 正在采集背景 (激光关闭)...")
                 background_frame = self.camera.capture(
@@ -170,8 +187,11 @@ class RamanWorkflow:
             print("\n[4/8] 采集样品光谱...")
             print(f"  - 曝光时间: {self.config.acquisition.exposure_ms} ms")
             print(f"  - 帧数: {self.config.acquisition.frames}")
+            # Checkpoint: last chance before the laser is switched ON.
+            _check_cancel()
             self._confirm_laser_on(require_confirmation=require_confirmation or self.runtime_mode == "real")
             print("  > 正在采集样品光谱 (激光开启)...")
+            _check_cancel()
             sample_frame = self.camera.capture(
                 read_mode=self.config.acquisition.read_mode,
                 exposure_ms=self.config.acquisition.exposure_ms,

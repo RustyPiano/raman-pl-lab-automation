@@ -83,6 +83,13 @@ def test_negative_burn_threshold_rejected(tmp_path):
         load_tray_scan_config(_write(tmp_path, body))
 
 
+def test_zero_burn_threshold_rejected(tmp_path):
+    # threshold 0 would flag every point as burned
+    body = _valid_body().replace("burn_threshold: 0.1", "burn_threshold: 0")
+    with pytest.raises(ConfigError):
+        load_tray_scan_config(_write(tmp_path, body))
+
+
 def test_path_injecting_sample_id_rejected(tmp_path):
     body = _valid_body().replace("id: tray-001", "id: ../../etc/evil")
     with pytest.raises(ConfigError):

@@ -17,6 +17,12 @@ stage:
     z: [-1000, 1000]
   state_file: state/stage_position.json
   max_unknown_move_um: 100
+  # Optional safe home direction ("positive" | "negative"). A limit hit in EITHER
+  # direction returns the same completion marker, so homing the wrong way records
+  # the far limit as origin 0.0 and inverts the axis -- every soft limit then guards
+  # the wrong side. Measure and fix this per axis ON THE REAL RIG before enabling;
+  # once set, home() refuses any other direction. Omit to leave unguarded.
+  # home_direction: negative
 
 spectrometer:
   type: zolix

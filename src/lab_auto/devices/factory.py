@@ -178,7 +178,7 @@ class DeviceFactory:
         except (OSError, AttributeError) as exc:
             raise DeviceError(f"failed to create DField camera: {exc}") from exc
 
-    def create_light(self, devices_config: DevicesConfig):
+    def create_light(self, devices_config: DevicesConfig, *, initial_all_off: bool = True):
         light_config = devices_config.light
         if light_config.type == "manual":
             if not light_config.manual_light_control:
@@ -187,7 +187,17 @@ class DeviceFactory:
         if light_config.type == "pwm_modbus":
             validate_pwm_light_config(light_config)
             transport = self._open_pwm_transport(light_config)
-            return PwmModbusLight(light_config, transport=transport, dry_run=False)
+            light = PwmModbusLight(light_config, transport=transport, dry_run=False)
+            if initial_all_off:
+                # Power-on safety: a crash may have left a channel (possibly the
+                # laser) energized. Force every channel off with read-back before
+                # handing the device out. Read-only status paths pass False.
+                try:
+                    light.safety_reset()
+                except Exception:
+                    light.close(all_off=False)  # already tried off; just drop the port
+                    raise
+            return light
         raise DeviceError(f"unsupported light type: {light_config.type}")
 
     def _open_pwm_transport(self, light_config):

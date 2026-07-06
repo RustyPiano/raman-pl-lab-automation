@@ -500,8 +500,118 @@ def test_create_light_dispatches_pwm_modbus_backend(tmp_path: Path):
 
     from lab_auto.devices.light import PwmModbusLight
 
-    light = factory.create_light(config)
+    # initial_all_off=False: this seam returns a dummy transport, so skip the
+    # power-on reset and only assert backend dispatch.
+    light = factory.create_light(config, initial_all_off=False)
     assert isinstance(light, PwmModbusLight)
     assert light.station == 3
     assert light.config.channels["laser"].channel == 2
     assert factory.opened == {"port": "COM7", "baudrate": 9600}
+
+
+class _RecordingModbusSlave:
+    """Minimal correct Modbus RTU slave over write()/read(n) that logs requests."""
+
+    def __init__(self, *, station, registers=None, ignore_writes_to=()):
+        self.station = station
+        self.registers = dict(registers or {})
+        self.ignore_writes_to = set(ignore_writes_to)
+        self.requests = []
+        self.closed = False
+        self._out = bytearray()
+
+    def write(self, data: bytes) -> None:
+        from lab_auto.devices.raw import pwm_modbus as mb
+
+        self.requests.append(bytes(data))
+        station, func = data[0], data[1]
+        if func == mb.READ:
+            addr = (data[2] << 8) | data[3]
+            count = (data[4] << 8) | data[5]
+            body = bytes([station, func, count * 2])
+            for offset in range(count):
+                reg = self.registers.get(addr + offset, 0)
+                body += bytes([(reg >> 8) & 0xFF, reg & 0xFF])
+            self._out += body + mb.crc16(body)
+        elif func == mb.WRITE_SINGLE:
+            addr = (data[2] << 8) | data[3]
+            value = (data[4] << 8) | data[5]
+            if addr not in self.ignore_writes_to:
+                self.registers[addr] = value
+            self._out += bytes(data)  # echo
+
+    def read(self, n: int) -> bytes:
+        chunk = bytes(self._out[:n])
+        del self._out[:n]
+        return chunk
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class PwmResetFactory(DeviceFactory):
+    """Override the serial seam with an in-memory modbus slave (no pyserial)."""
+
+    def __init__(self, slave):
+        self.slave = slave
+
+    def _open_pwm_transport(self, light_config):
+        return self.slave
+
+
+def test_create_light_runs_power_on_all_off_before_returning(tmp_path: Path):
+    from lab_auto.devices.light import PwmModbusLight
+    from lab_auto.devices.raw import pwm_modbus as mb
+
+    devices = tmp_path / "devices.real.yaml"
+    write_pwm_devices_config(devices)
+    config = load_devices_config(devices)
+    slave = _RecordingModbusSlave(station=config.light.station_id)
+    factory = PwmResetFactory(slave)
+
+    light = factory.create_light(config)
+
+    assert isinstance(light, PwmModbusLight)
+    writes = [f for f in slave.requests if f[1] == mb.WRITE_SINGLE]
+    off_regs = {(f[2] << 8) | f[3] for f in writes}
+    assert off_regs == {mb.output_state_register(ch) for ch in (1, 2, 3, 4, 5)}
+    for f in writes:  # every power-on write drove a channel OFF
+        assert ((f[4] << 8) | f[5]) == 0
+    # write-then-read-back ordering for channel 1
+    reg1 = mb.output_state_register(1)
+    idx_write = next(i for i, f in enumerate(slave.requests) if f[1] == mb.WRITE_SINGLE and ((f[2] << 8) | f[3]) == reg1)
+    idx_read = next(i for i, f in enumerate(slave.requests) if f[1] == mb.READ and ((f[2] << 8) | f[3]) == reg1)
+    assert idx_write < idx_read
+
+
+def test_create_light_raises_and_closes_when_power_on_reset_cannot_confirm_off(tmp_path: Path):
+    from lab_auto.devices.raw import pwm_modbus as mb
+
+    devices = tmp_path / "devices.real.yaml"
+    write_pwm_devices_config(devices)
+    config = load_devices_config(devices)
+    laser_reg = mb.output_state_register(2)  # laser channel from PWM_LIGHT_BLOCK
+    slave = _RecordingModbusSlave(
+        station=config.light.station_id,
+        registers={laser_reg: 1},  # laser stuck energized
+        ignore_writes_to={laser_reg},  # off write never takes
+    )
+    factory = PwmResetFactory(slave)
+
+    with pytest.raises(DeviceError, match="safety reset"):
+        factory.create_light(config)
+    assert slave.closed is True
+
+
+def test_create_light_skips_power_on_reset_when_disabled(tmp_path: Path):
+    from lab_auto.devices.raw import pwm_modbus as mb
+
+    devices = tmp_path / "devices.real.yaml"
+    write_pwm_devices_config(devices)
+    config = load_devices_config(devices)
+    slave = _RecordingModbusSlave(station=config.light.station_id)
+    factory = PwmResetFactory(slave)
+
+    factory.create_light(config, initial_all_off=False)
+
+    assert not [f for f in slave.requests if f[1] == mb.WRITE_SINGLE]

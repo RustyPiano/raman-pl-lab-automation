@@ -1,10 +1,12 @@
 """Device management API endpoints."""
+import asyncio
 import logging
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
 from lab_auto.api.models import DeviceStatusResponse, LightStatusResponse
+from lab_auto.api.task_queue import task_queue
 from lab_auto.config import load_devices_config
 from lab_auto.devices.factory import DeviceFactory
 from lab_auto.errors import ConfigError, DeviceError
@@ -12,15 +14,38 @@ from lab_auto.errors import ConfigError, DeviceError
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/devices", tags=["devices"])
 
+# Every blocking hardware call below runs in the process-wide default executor
+# (asyncio.get_event_loop().run_in_executor(None, ...)) -- deliberately NOT the
+# task queue's single-threaded hardware executor, which a running job may be
+# occupying. That is exactly the case task_queue.is_hardware_busy() exists to
+# detect and refuse up front instead of racing the same serial port. Bounded
+# by this timeout so a wedged port fails the HTTP request instead of hanging
+# it indefinitely.
+_HARDWARE_CALL_TIMEOUT_S = 15
+
+
+async def _run_in_thread(fn):
+    """Run a blocking hardware call off the event loop, with a bounded wait."""
+    loop = asyncio.get_event_loop()
+    return await asyncio.wait_for(loop.run_in_executor(None, fn), timeout=_HARDWARE_CALL_TIMEOUT_S)
+
 
 @router.get("/status", response_model=DeviceStatusResponse)
 async def get_device_status(devices_config: str = "configs/devices.yaml"):
     """Get status of all devices."""
+    if task_queue.is_hardware_busy():
+        raise HTTPException(status_code=409, detail="任务正在使用硬件，无法查询设备状态")
     try:
         config = load_devices_config(Path(devices_config))
-        factory = DeviceFactory()
-        status = factory.run_status(config)
+
+        def _run():
+            factory = DeviceFactory()
+            return factory.run_status(config)
+
+        status = await _run_in_thread(_run)
         return DeviceStatusResponse(**status)
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Device status query timed out")
     except (ConfigError, DeviceError) as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -31,11 +56,18 @@ async def get_device_status(devices_config: str = "configs/devices.yaml"):
 @router.post("/scan")
 async def scan_devices(devices_config: str = "configs/devices.yaml"):
     """Scan for available devices."""
+    if task_queue.is_hardware_busy():
+        raise HTTPException(status_code=409, detail="任务正在使用硬件，无法执行设备扫描")
     try:
         config = load_devices_config(Path(devices_config))
-        factory = DeviceFactory()
-        scan_result = factory.run_scan(config)
-        return scan_result
+
+        def _run():
+            factory = DeviceFactory()
+            return factory.run_scan(config)
+
+        return await _run_in_thread(_run)
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Device scan timed out")
     except (ConfigError, DeviceError) as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -45,103 +77,125 @@ async def scan_devices(devices_config: str = "configs/devices.yaml"):
 
 @router.get("/light/status", response_model=LightStatusResponse)
 async def get_light_status(devices_config: str = "configs/devices.yaml"):
-    """Get light source status."""
+    """Get light source status.
+
+    A ``pwm_modbus`` light is queried with a side-effect-free register
+    read-back (``PwmModbusLight.read_hardware_state``) -- no channel is ever
+    written, so this can never turn a running laser off. It requires the
+    hardware to be idle: refuses with 409 if the task queue is mid-job rather
+    than opening a second connection on the same serial port a running
+    workflow may already hold.
+    """
     try:
         config = load_devices_config(Path(devices_config))
+    except (ConfigError, DeviceError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if config.light.type != "pwm_modbus":
+        # Manual (or any non-hardware-backed) light: nothing to read: report
+        # the software-only configuration state.
+        return LightStatusResponse(
+            type=config.light.type,
+            manual_control=config.light.manual_light_control,
+            available=True,
+        )
+
+    if task_queue.is_hardware_busy():
+        raise HTTPException(status_code=409, detail="任务正在使用硬件，无法查询")
+
+    def _read():
         factory = DeviceFactory()
-        light = factory.create_light(config)
-
+        # initial_all_off=False: this is a read-only status query, it must
+        # not force any channel off (that would be an unannounced light-off
+        # side effect on a GET request).
+        light = factory.create_light(config, initial_all_off=False)
         try:
-            # Try to determine if light is on (only for PWM/Modbus types)
-            is_on = None
-            if hasattr(light, 'is_on'):
-                try:
-                    is_on = light.is_on()
-                except Exception:
-                    pass
-
-            return LightStatusResponse(
-                type=config.light.type,
-                is_on=is_on,
-                manual_control=config.light.manual_light_control,
-                available=True,
-            )
+            return light.read_hardware_state()
         finally:
-            if hasattr(light, 'close'):
-                light.close()
+            light.close(all_off=False)
 
+    try:
+        hardware_state = await _run_in_thread(_read)
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Timed out reading light hardware state")
     except (ConfigError, DeviceError) as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.exception("Error getting light status")
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
 
+    return LightStatusResponse(
+        type=config.light.type,
+        manual_control=config.light.manual_light_control,
+        available=True,
+        hardware_state=hardware_state,
+    )
 
-@router.post("/light/on")
-async def turn_light_on(devices_config: str = "configs/devices.yaml"):
-    """Turn on light source (with safety checks)."""
-    try:
-        config = load_devices_config(Path(devices_config))
 
-        if config.light.manual_light_control:
-            return {
-                "status": "manual",
-                "message": "Light is configured for manual control. Please turn on manually.",
-            }
-
-        factory = DeviceFactory()
-        light = factory.create_light(config)
-
-        try:
-            if hasattr(light, 'turn_on'):
-                light.turn_on()
-                return {"status": "on", "message": "Light turned on successfully"}
-            else:
-                return {
-                    "status": "unsupported",
-                    "message": f"Light type {config.light.type} does not support programmatic control",
-                }
-        finally:
-            if hasattr(light, 'close'):
-                light.close()
-
-    except (ConfigError, DeviceError) as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.exception("Error turning light on")
-        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+# NOTE: POST /light/on was intentionally removed -- not renamed, not merged
+# into another endpoint. An unauthenticated "turn the laser on" HTTP endpoint
+# is a CSRF attack surface (any page the operator's browser has open could
+# silently POST to it), and the frontend never called it. Turning the laser
+# on is only ever done through a workflow run (SinglePointRequest with
+# mode="real"/confirm_real=True, gated by ManualLight/PwmModbusLight's own
+# on-confirmation). This router does not grow a replacement "turn on"
+# capability.
 
 
 @router.post("/light/off")
 async def turn_light_off(devices_config: str = "configs/devices.yaml"):
-    """Turn off light source."""
+    """Force the light source off (all channels, read-back confirmed).
+
+    Unlike the other endpoints in this router, a busy hardware executor does
+    NOT refuse this request: off is the safe direction, and "the hardware is
+    busy" is exactly the situation an operator reaching for an off switch is
+    in. If the task queue is mid-job, every job is cancelled first
+    (``task_queue.cancel_all()``) and this still attempts to force the light
+    off afterwards; the response says plainly whether a cancellation happened
+    first.
+    """
     try:
         config = load_devices_config(Path(devices_config))
+    except (ConfigError, DeviceError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
-        if config.light.manual_light_control:
-            return {
-                "status": "manual",
-                "message": "Light is configured for manual control. Please turn off manually.",
-            }
+    if config.light.type != "pwm_modbus":
+        return {
+            "status": "manual",
+            "message": "Light is configured for manual control. Please turn off manually.",
+        }
 
+    cancelled_jobs: list[str] = []
+    if task_queue.is_hardware_busy():
+        cancelled_jobs = task_queue.cancel_all()
+
+    def _turn_off():
         factory = DeviceFactory()
-        light = factory.create_light(config)
-
+        light = factory.create_light(config, initial_all_off=False)
         try:
-            if hasattr(light, 'turn_off'):
-                light.turn_off()
-                return {"status": "off", "message": "Light turned off successfully"}
-            else:
-                return {
-                    "status": "unsupported",
-                    "message": f"Light type {config.light.type} does not support programmatic control",
-                }
+            light.safety_reset()
+            return light.read_hardware_state()
         finally:
-            if hasattr(light, 'close'):
-                light.close()
+            light.close(all_off=False)
 
+    try:
+        hardware_state = await _run_in_thread(_turn_off)
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Timed out turning off light")
     except (ConfigError, DeviceError) as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.exception("Error turning light off")
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+
+    message = "Light turned off successfully"
+    if cancelled_jobs:
+        message = (
+            f"Cancelled {len(cancelled_jobs)} running job(s), then turned light off successfully"
+        )
+    return {
+        "status": "off",
+        "message": message,
+        "cancelled_jobs": cancelled_jobs,
+        "hardware_state": hardware_state,
+    }

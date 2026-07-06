@@ -24,10 +24,16 @@ class JobProgress(BaseModel):
 
 
 class JobStatus(BaseModel):
-    """Status of a workflow job."""
+    """Status of a workflow job.
+
+    ``stopping`` is transitional: a stop was requested on a running job and its
+    cancellation signal was raised, but the workflow has not yet reached a
+    checkpoint and unwound. It becomes ``stopped`` once the workflow actually
+    halts (or ``completed`` if it finished before the request took effect).
+    """
     id: str
     type: str
-    status: Literal["pending", "running", "completed", "failed", "stopped"]
+    status: Literal["pending", "running", "stopping", "completed", "failed", "stopped"]
     progress: JobProgress
     created_at: str
     started_at: str | None = None
@@ -44,11 +50,16 @@ class DeviceStatusResponse(BaseModel):
 
 
 class LightStatusResponse(BaseModel):
-    """Light source status."""
+    """Light source status.
+
+    ``hardware_state`` is populated only for a ``pwm_modbus`` light (the
+    register read-back from ``PwmModbusLight.read_hardware_state()``); a
+    manual light has no hardware to read and reports ``None``.
+    """
     type: str
-    is_on: bool | None = None
     manual_control: bool
     available: bool
+    hardware_state: dict[str, Any] | None = None
 
 
 class ConfigListResponse(BaseModel):

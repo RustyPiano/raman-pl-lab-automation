@@ -46,7 +46,7 @@ export interface JobProgress {
 export interface ApiJobStatus {
   id: string;
   type: string;
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'stopped';
+  status: 'pending' | 'running' | 'stopping' | 'completed' | 'failed' | 'stopped';
   progress: JobProgress;
   created_at: string;
   started_at?: string | null;

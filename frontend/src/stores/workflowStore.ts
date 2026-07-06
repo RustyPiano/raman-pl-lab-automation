@@ -105,7 +105,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
         get().addLog('⚠️ Connection lost, reconnecting...');
         setTimeout(() => {
           const currentJob = get().currentJob;
-          if (currentJob && currentJob.status === 'running') {
+          if (currentJob && (currentJob.status === 'running' || currentJob.status === 'stopping' || currentJob.status === 'pending')) {
             get().connectWebSocket(jobId);
           }
         }, 3000);
@@ -164,18 +164,16 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   stopJob: async (jobId: string) => {
     try {
       await apiClient.stopJob(jobId);
-      get().addLog('⏹️ Stop requested');
+      get().addLog('⏹️ 停止请求已发送，等待硬件安全收尾（激光关闭确认后才会真正停止）…');
 
-      // Update local state
+      // Honest semantics: mark as "stopping" and keep the WebSocket open so the
+      // backend's real terminal status (stopped/completed/failed) reaches the UI.
       set((state) => ({
         currentJob: state.currentJob ? {
           ...state.currentJob,
-          status: 'stopped',
+          status: 'stopping',
         } : null,
       }));
-
-      // Disconnect WebSocket
-      get().disconnectWebSocket();
     } catch (error) {
       const message = getErrorMessage(error);
       throw new Error(message);

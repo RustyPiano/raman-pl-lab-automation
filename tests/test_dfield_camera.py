@@ -136,6 +136,33 @@ def test_adapter_rejects_fvb_roi_before_raw_capture():
     assert raw.calls == []
 
 
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"exposure_ms": 60_001},
+        {"frames": 1001},
+    ],
+)
+def test_adapter_rejects_capture_args_over_safety_caps(kwargs):
+    raw = FakeDFieldRaw()
+    camera = DFieldCamera(raw)
+
+    args = {"read_mode": "fvb", "exposure_ms": 100, "gain": "low", "frames": 1}
+    args.update(kwargs)
+    with pytest.raises(ConfigError, match="safety cap"):
+        camera.capture(**args)
+
+    assert raw.calls == []
+
+
+def test_adapter_accepts_capture_args_at_safety_caps():
+    raw = FakeDFieldRaw()
+    camera = DFieldCamera(raw)
+
+    frame = camera.capture(read_mode="fvb", exposure_ms=60_000, gain="low", frames=1)
+    assert frame is not None
+
+
 @pytest.mark.parametrize("kwargs", [{"frames": math.nan}, {"frames": 1, "bin_x": math.nan}, {"frames": 1, "bin_y": math.nan}])
 def test_adapter_rejects_non_finite_integer_capture_args(kwargs):
     raw = FakeDFieldRaw()
