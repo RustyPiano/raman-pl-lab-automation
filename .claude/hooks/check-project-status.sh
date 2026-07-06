@@ -2,14 +2,16 @@
 # Stop hook: enforce the project-status maintenance convention (see CLAUDE.md).
 # If the session produced git commits newer than docs/PROJECT_STATUS.md, block
 # the turn from ending once and ask Claude to refresh the status doc.
+# Deliberately no jq dependency: must run under Git Bash on the lab Windows
+# machine with nothing installed beyond Git itself.
 set -u
 
 input=$(cat)
 
 # Never re-block while Claude is already continuing because of this hook.
-if echo "$input" | jq -e '.stop_hook_active == true' >/dev/null 2>&1; then
-  exit 0
-fi
+case "$input" in
+  *'"stop_hook_active":true'* | *'"stop_hook_active": true'*) exit 0 ;;
+esac
 
 cd "${CLAUDE_PROJECT_DIR:-$(dirname "$0")/../..}" 2>/dev/null || exit 0
 
@@ -23,7 +25,7 @@ if git diff-tree --no-commit-id --name-only -r HEAD 2>/dev/null | grep -qx "$doc
 fi
 
 head_ts=$(git log -1 --format=%ct 2>/dev/null) || exit 0
-# stat: macOS (-f %m) first, GNU (-c %Y) fallback.
+# stat: macOS (-f %m) first, GNU/Git-Bash (-c %Y) fallback.
 doc_ts=$(stat -f %m "$doc" 2>/dev/null || stat -c %Y "$doc" 2>/dev/null) || exit 0
 
 if [ "${head_ts:-0}" -gt "${doc_ts:-0}" ]; then
