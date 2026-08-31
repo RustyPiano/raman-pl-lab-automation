@@ -4,6 +4,14 @@
 # Generated analysis/rendering artifacts
 tmp/
 
+# Vendor SDKs, drivers, and lab reference binaries stay local
+vendor/
+DField-VS-A4-SDK-*/
+光谱议控制SDK-*/
+Waynelabs SDK Instructions.pdf
+自动化主要流程.docx
+多路(5+1)路PWM信号发生器通讯协议说明.doc
+
 # Runtime outputs from future automation code
 output/
 state/
