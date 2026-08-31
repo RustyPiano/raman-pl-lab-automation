@@ -102,3 +102,20 @@ def test_near_singular_calibration_rejected(tmp_path):
     body = body.replace("a12: 0.0", "a12: 0.0").replace("a21: 0.0", "a21: 0.0")
     with pytest.raises(ConfigError):
         load_tray_scan_config(_write(tmp_path, body))
+
+
+def test_calibration_image_dimensions_must_be_declared_together(tmp_path):
+    body = _valid_body().replace("  image_center_py: 240", "  image_center_py: 240\n  image_width_px: 640")
+
+    with pytest.raises(ConfigError, match="must be set together"):
+        load_tray_scan_config(_write(tmp_path, body))
+
+
+def test_calibration_image_center_must_be_inside_declared_frame(tmp_path):
+    body = _valid_body().replace(
+        "  image_center_py: 240",
+        "  image_center_py: 240\n  image_width_px: 320\n  image_height_px: 480",
+    )
+
+    with pytest.raises(ConfigError, match="image_center_px"):
+        load_tray_scan_config(_write(tmp_path, body))

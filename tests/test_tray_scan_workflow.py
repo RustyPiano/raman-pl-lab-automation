@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -43,11 +44,15 @@ class FakeMeasurer:
     def __init__(self, intensity_fn):
         self.intensity_fn = intensity_fn
         self.calls = []
+        self.cancel_callbacks = []
         self.mask_calls = 0
         self.closed = False
 
-    def measure_point(self, *, point_id, x_um, y_um, role, repeat, require_confirmation):
+    def measure_point(
+        self, *, point_id, x_um, y_um, role, repeat, require_confirmation, should_cancel=None
+    ):
         self.calls.append((point_id, role, repeat))
+        self.cancel_callbacks.append(should_cancel)
         return SimpleNamespace(
             intensities=self.intensity_fn(role, repeat),
             output_path=f"out/{point_id}-{role}-rep{repeat}",
@@ -393,9 +398,16 @@ def test_empty_mask_flags_no_centers_and_resume_retries(tmp_path):
 def test_resume_reuses_persisted_centers_ignoring_new_mask(tmp_path):
     cfg = _config(tray=_tray_1x1(), pattern=_single_point_pattern(), calibration=_calib(), output_dir=tmp_path)
     wafer = wafer_centers(cfg.tray)[0]
+    fingerprint = TrayScanWorkflow.real(
+        cfg,
+        stage=_homed_stage(),
+        point_measurer=FakeMeasurer(lambda r, n: [1.0]),
+        mask_provider=lambda w: ONE_BLOB,
+    )._config_fingerprint()
     # Seed a partially-done manifest: one detected center, no points measured yet.
     (tmp_path / "manifest.json").write_text(json.dumps({
         "sample_id": cfg.sample.id, "operator": cfg.sample.operator, "runtime_mode": "real",
+        "config_fingerprint": fingerprint,
         "wafers": [{
             "index": 0, "row": wafer.row, "col": wafer.col, "x_um": wafer.x_um, "y_um": wafer.y_um,
             "centers": [{"label": 1, "pixel_x": 0.5, "pixel_y": 0.5, "area": 4,
@@ -432,6 +444,15 @@ def test_config_fingerprint_mismatch_raises(tmp_path):
         wf.run(require_confirmation=False)
 
 
+def test_manifest_without_fingerprint_is_not_resumed(tmp_path):
+    (tmp_path / "manifest.json").write_text(json.dumps({"wafers": []}))
+    cfg = _config(tray=_tray_1x1(), pattern=_single_point_pattern(), calibration=_calib(), output_dir=tmp_path)
+    wf = TrayScanWorkflow.real(cfg, stage=_homed_stage(), point_measurer=FakeMeasurer(lambda r, n: [1.0]), mask_provider=lambda w: ONE_BLOB)
+
+    with pytest.raises(ConfigError, match="different experiment configuration"):
+        wf.run(require_confirmation=False)
+
+
 def test_fingerprint_includes_burn_threshold(tmp_path):
     # Changing only burn_threshold must invalidate a resume (fingerprint covers it).
     cfg = _config(tray=_tray_1x1(), pattern=_single_point_pattern(), calibration=_calib(), output_dir=tmp_path)
@@ -443,3 +464,54 @@ def test_fingerprint_includes_burn_threshold(tmp_path):
     wf2 = TrayScanWorkflow.real(cfg2, stage=_homed_stage(), point_measurer=FakeMeasurer(lambda r, n: [1.0]), mask_provider=lambda w: ONE_BLOB)
     with pytest.raises(ConfigError):
         wf2.run(require_confirmation=False)
+
+
+def test_fingerprint_rejects_changed_acquisition(tmp_path):
+    cfg = _config(
+        tray=_tray_1x1(),
+        pattern=_single_point_pattern(),
+        calibration=_calib(),
+        output_dir=tmp_path,
+    )
+    TrayScanWorkflow.real(
+        cfg,
+        stage=_homed_stage(),
+        point_measurer=FakeMeasurer(lambda r, n: [1.0]),
+        mask_provider=lambda w: ONE_BLOB,
+    ).run(require_confirmation=False)
+    changed = replace(cfg, acquisition=replace(cfg.acquisition, exposure_ms=20.0))
+
+    with pytest.raises(ConfigError, match="different experiment configuration"):
+        TrayScanWorkflow.real(
+            changed,
+            stage=_homed_stage(),
+            point_measurer=FakeMeasurer(lambda r, n: [1.0]),
+            mask_provider=lambda w: ONE_BLOB,
+        ).run(require_confirmation=False)
+
+
+def test_fingerprint_changes_when_devices_file_changes(tmp_path):
+    devices = tmp_path / "devices.yaml"
+    devices.write_text("runtime: {mode: real}")
+    cfg = replace(
+        _config(tray=_tray_1x1(), pattern=_single_point_pattern(), calibration=_calib(), output_dir=tmp_path),
+        devices_config=devices,
+    )
+    wf = TrayScanWorkflow.real(cfg, stage=_homed_stage(), point_measurer=FakeMeasurer(lambda r, n: [1.0]), mask_provider=lambda w: ONE_BLOB)
+    before = wf._config_fingerprint()
+
+    devices.write_text("runtime: {mode: dry_run}")
+
+    assert wf._config_fingerprint() != before
+
+
+def test_cancel_callback_reaches_each_point_measurement(tmp_path):
+    cfg = _config(tray=_tray_1x1(), pattern=_single_point_pattern(), calibration=_calib(), output_dir=tmp_path)
+    measurer = FakeMeasurer(lambda r, n: [1.0])
+    callback = lambda: False
+
+    TrayScanWorkflow.real(
+        cfg, stage=_homed_stage(), point_measurer=measurer, mask_provider=lambda w: ONE_BLOB
+    ).run(require_confirmation=False, should_cancel=callback)
+
+    assert measurer.cancel_callbacks and all(item is callback for item in measurer.cancel_callbacks)

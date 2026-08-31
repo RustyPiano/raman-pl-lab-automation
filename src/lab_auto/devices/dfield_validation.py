@@ -12,6 +12,9 @@ MAX_BIN_Y = 129
 # up front, not discovered as a stuck queue with the laser dwelling on the sample.
 MAX_EXPOSURE_MS = 60_000
 MAX_FRAMES = 1000
+# One continuous capture may keep the laser on for at most 60 seconds. Longer
+# experiments must be split so cancellation and laser-off checks run between them.
+MAX_TOTAL_EXPOSURE_MS = 60_000
 
 
 def _is_integer(value) -> bool:
@@ -89,4 +92,9 @@ def validate_dfield_capture_args(
         raise ConfigError("frames must be at least 1")
     if frames > MAX_FRAMES:
         raise ConfigError(f"frames exceeds the safety cap of {MAX_FRAMES}")
+    if exposure_ms * frames > MAX_TOTAL_EXPOSURE_MS:
+        raise ConfigError(
+            f"exposure_ms * frames exceeds the total safety cap of "
+            f"{MAX_TOTAL_EXPOSURE_MS} ms (60 s)"
+        )
     validate_dfield_bin_roi(bin_x=bin_x, bin_y=bin_y, roi=roi)

@@ -18,6 +18,47 @@ from lab_auto.processing.background import subtract_background
 from lab_auto.workflow.data import CaptureFrame, SpectrumData
 
 
+def read_single_point_result(run_dir: str | Path) -> dict:
+    """Read the files written by ``run_single_point`` into the API result shape."""
+    run_dir = Path(run_dir)
+
+    def _column(path: Path, value_key: str) -> tuple[list[float | int], list[float], str]:
+        x: list[float | int] = []
+        values: list[float] = []
+        x_axis_type = "pixel_index"
+        if not path.exists():
+            return x, values, x_axis_type
+        with path.open(encoding="utf-8") as handle:
+            for row in csv.DictReader(handle):
+                if row.get("wavelength_nm") not in (None, ""):
+                    x_axis_type = "wavelength_nm"
+                    x.append(float(row["wavelength_nm"]))
+                else:
+                    x.append(int(row["pixel_index"]))
+                values.append(float(row[value_key]))
+        return x, values, x_axis_type
+
+    x, raw, x_axis_type = _column(run_dir / "raw.csv", "intensity_raw")
+    _, corrected, _ = _column(run_dir / "corrected.csv", "intensity_corrected")
+    metadata_path = run_dir / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.exists() else {}
+    raw_warnings = metadata.get("warnings", [])
+    warnings = (
+        [warning for warning in raw_warnings if isinstance(warning, str)]
+        if isinstance(raw_warnings, list)
+        else []
+    )
+    metadata["warnings"] = warnings
+    return {
+        "x": x,
+        "x_axis_type": x_axis_type,
+        "wavelengths": x if x_axis_type == "wavelength_nm" else None,
+        "spectrum": {"raw": raw, "corrected": corrected or None},
+        "metadata": metadata,
+        "warnings": warnings,
+    }
+
+
 @dataclass
 class RamanWorkflow:
     config: WorkflowConfig
@@ -174,12 +215,15 @@ class RamanWorkflow:
                 _check_cancel()
                 self._confirm_laser_off(require_confirmation=require_confirmation or self.runtime_mode == "real")
                 print("  > 正在采集背景 (激光关闭)...")
-                background_frame = self.camera.capture(
+                capture_kwargs = dict(
                     read_mode=self.config.acquisition.read_mode,
                     exposure_ms=self.config.acquisition.exposure_ms,
                     gain=self.config.acquisition.gain,
                     frames=self.config.acquisition.frames,
                 )
+                if should_cancel is not None:
+                    capture_kwargs["should_cancel"] = should_cancel
+                background_frame = self.camera.capture(**capture_kwargs)
                 print("✓ 背景采集完成")
             else:
                 print("\n[3/8] 跳过背景采集 (未启用背景扣除)")
@@ -192,12 +236,15 @@ class RamanWorkflow:
             self._confirm_laser_on(require_confirmation=require_confirmation or self.runtime_mode == "real")
             print("  > 正在采集样品光谱 (激光开启)...")
             _check_cancel()
-            sample_frame = self.camera.capture(
+            capture_kwargs = dict(
                 read_mode=self.config.acquisition.read_mode,
                 exposure_ms=self.config.acquisition.exposure_ms,
                 gain=self.config.acquisition.gain,
                 frames=self.config.acquisition.frames,
             )
+            if should_cancel is not None:
+                capture_kwargs["should_cancel"] = should_cancel
+            sample_frame = self.camera.capture(**capture_kwargs)
             print("✓ 样品采集完成")
 
             if self.runtime_mode == "real":

@@ -10,7 +10,7 @@ import lab_auto.api.main as main
 
 
 def test_app_starts_when_no_default_devices_config_present(tmp_path, monkeypatch):
-    monkeypatch.setattr(main, "_DEFAULT_DEVICES_CONFIG", tmp_path / "no-such-devices.yaml")
+    monkeypatch.setenv("LAB_AUTO_DEVICES_CONFIG", str(tmp_path / "no-such-devices.yaml"))
 
     with TestClient(main.app) as client:
         response = client.get("/health")
@@ -21,7 +21,7 @@ def test_app_starts_when_no_default_devices_config_present(tmp_path, monkeypatch
 def test_app_starts_even_if_devices_config_fails_to_load(tmp_path, monkeypatch):
     broken = tmp_path / "devices.yaml"
     broken.write_text("not: [valid, yaml, mapping", encoding="utf-8")
-    monkeypatch.setattr(main, "_DEFAULT_DEVICES_CONFIG", broken)
+    monkeypatch.setenv("LAB_AUTO_DEVICES_CONFIG", str(broken))
 
     with TestClient(main.app) as client:
         response = client.get("/health")
@@ -29,13 +29,11 @@ def test_app_starts_even_if_devices_config_fails_to_load(tmp_path, monkeypatch):
     assert response.status_code == 200
 
 
-def test_reset_light_best_effort_is_success_when_no_default_config(tmp_path, monkeypatch):
-    monkeypatch.setattr(main, "_DEFAULT_DEVICES_CONFIG", tmp_path / "missing.yaml")
+def test_reset_light_best_effort_reports_missing_default_config(tmp_path):
+    success, detail = main._reset_light_best_effort(tmp_path / "missing.yaml")
 
-    success, detail = main._reset_light_best_effort()
-
-    assert success is True
-    assert "nothing to reset" in detail
+    assert success is False
+    assert "not found" in detail
 
 
 def test_reset_light_best_effort_is_success_for_manual_light(tmp_path, monkeypatch):
@@ -59,9 +57,7 @@ def test_reset_light_best_effort_is_success_for_manual_light(tmp_path, monkeypat
     }
     config_path = tmp_path / "devices.yaml"
     config_path.write_text(yaml.safe_dump(devices_yaml), encoding="utf-8")
-    monkeypatch.setattr(main, "_DEFAULT_DEVICES_CONFIG", config_path)
-
-    success, detail = main._reset_light_best_effort()
+    success, detail = main._reset_light_best_effort(config_path)
 
     assert success is True
     assert "no hardware to reset" in detail
@@ -70,9 +66,7 @@ def test_reset_light_best_effort_is_success_for_manual_light(tmp_path, monkeypat
 def test_reset_light_best_effort_reports_failure_without_raising(tmp_path, monkeypatch):
     broken = tmp_path / "devices.yaml"
     broken.write_text("not: [valid, yaml, mapping", encoding="utf-8")
-    monkeypatch.setattr(main, "_DEFAULT_DEVICES_CONFIG", broken)
-
-    success, detail = main._reset_light_best_effort()
+    success, detail = main._reset_light_best_effort(broken)
 
     assert success is False
     assert detail  # some reason is reported, never a silent failure
@@ -81,6 +75,6 @@ def test_reset_light_best_effort_reports_failure_without_raising(tmp_path, monke
 def test_atexit_handler_never_raises(tmp_path, monkeypatch):
     # The atexit-registered handler must swallow everything -- process exit
     # must never be blocked by this safety net.
-    monkeypatch.setattr(main, "_DEFAULT_DEVICES_CONFIG", tmp_path / "missing.yaml")
+    monkeypatch.setenv("LAB_AUTO_DEVICES_CONFIG", str(tmp_path / "missing.yaml"))
 
     main._atexit_safety_reset()  # must not raise

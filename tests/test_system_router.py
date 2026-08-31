@@ -54,13 +54,22 @@ def _write(tmp_path, light):
 
 
 class FakeQueue:
-    def __init__(self, cancelled):
+    def __init__(self, cancelled, *, active_light=False):
         self._cancelled = cancelled
+        self._active_light = active_light
         self.cancel_all_called = False
+        self.force_off_called = False
 
-    def cancel_all(self):
+    async def cancel_all(self):
         self.cancel_all_called = True
         return self._cancelled
+
+    def safety_devices_path(self):
+        return None
+
+    def force_active_light_off(self):
+        self.force_off_called = True
+        return self._active_light
 
 
 class FakeLight:
@@ -97,8 +106,9 @@ def test_emergency_stop_cancels_jobs_and_confirms_laser_off(tmp_path, monkeypatc
     monkeypatch.setattr(system, "task_queue", FakeQueue(["job-1", "job-2"]))
     light = FakeLight()
     monkeypatch.setattr(system, "DeviceFactory", _fake_factory_class(light))
+    monkeypatch.setenv("LAB_AUTO_DEVICES_CONFIG", config_path)
 
-    response = app_client.post("/api/emergency-stop", params={"devices_config": config_path})
+    response = app_client.post("/api/emergency-stop")
 
     assert response.status_code == 200
     body = response.json()
@@ -113,8 +123,9 @@ def test_emergency_stop_reports_failure_honestly_without_500(tmp_path, monkeypat
     monkeypatch.setattr(system, "task_queue", FakeQueue([]))
     light = FakeLight(fail=True)
     monkeypatch.setattr(system, "DeviceFactory", _fake_factory_class(light))
+    monkeypatch.setenv("LAB_AUTO_DEVICES_CONFIG", config_path)
 
-    response = app_client.post("/api/emergency-stop", params={"devices_config": config_path})
+    response = app_client.post("/api/emergency-stop")
 
     assert response.status_code == 200
     body = response.json()
@@ -127,8 +138,9 @@ def test_emergency_stop_manual_light_is_not_applicable(tmp_path, monkeypatch, ap
     config_path = _write(tmp_path, BASE["light"])
     queue = FakeQueue(["job-x"])
     monkeypatch.setattr(system, "task_queue", queue)
+    monkeypatch.setenv("LAB_AUTO_DEVICES_CONFIG", config_path)
 
-    response = app_client.post("/api/emergency-stop", params={"devices_config": config_path})
+    response = app_client.post("/api/emergency-stop")
 
     assert response.status_code == 200
     body = response.json()
@@ -138,14 +150,16 @@ def test_emergency_stop_manual_light_is_not_applicable(tmp_path, monkeypatch, ap
     assert body["jobs_cancelled"] == ["job-x"]
 
 
-def test_emergency_stop_missing_devices_config_is_not_applicable(tmp_path, monkeypatch, app_client):
+def test_emergency_stop_missing_devices_config_reports_failure(tmp_path, monkeypatch, app_client):
     monkeypatch.setattr(system, "task_queue", FakeQueue([]))
     missing = tmp_path / "no-such-devices.yaml"
+    monkeypatch.setenv("LAB_AUTO_DEVICES_CONFIG", str(missing))
 
-    response = app_client.post("/api/emergency-stop", params={"devices_config": str(missing)})
+    response = app_client.post("/api/emergency-stop")
 
     assert response.status_code == 200
-    assert response.json()["laser_off"] == "not_applicable"
+    assert response.json()["laser_off"].startswith("failed:")
+    assert "physical switch" in response.json()["message"]
 
 
 def test_emergency_stop_always_cancels_jobs_even_before_config_load(tmp_path, monkeypatch, app_client):
@@ -154,10 +168,23 @@ def test_emergency_stop_always_cancels_jobs_even_before_config_load(tmp_path, mo
     monkeypatch.setattr(system, "task_queue", FakeQueue(["job-1"]))
     broken = tmp_path / "devices.yaml"
     broken.write_text("not: [valid, yaml, mapping", encoding="utf-8")
+    monkeypatch.setenv("LAB_AUTO_DEVICES_CONFIG", str(broken))
 
-    response = app_client.post("/api/emergency-stop", params={"devices_config": str(broken)})
+    response = app_client.post("/api/emergency-stop")
 
     assert response.status_code == 200
     body = response.json()
     assert body["jobs_cancelled"] == ["job-1"]
     assert body["laser_off"].startswith("failed:")
+
+
+def test_emergency_stop_prefers_active_light_handle_without_config(tmp_path, monkeypatch, app_client):
+    queue = FakeQueue(["job-1"], active_light=True)
+    monkeypatch.setattr(system, "task_queue", queue)
+    monkeypatch.setenv("LAB_AUTO_DEVICES_CONFIG", str(tmp_path / "missing.yaml"))
+
+    response = app_client.post("/api/emergency-stop")
+
+    assert response.status_code == 200
+    assert response.json()["laser_off"] == "confirmed"
+    assert queue.force_off_called is True

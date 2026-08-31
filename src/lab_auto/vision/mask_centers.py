@@ -4,6 +4,7 @@ Pure stdlib: 4-connected components + centroid. No numpy. The recognition code
 (冯博士) provides only the mask; we own the center-extraction format.
 """
 
+import math
 from dataclasses import dataclass
 
 from lab_auto.errors import ConfigError
@@ -37,6 +38,12 @@ def _validate(mask):
     for row in mask:
         if len(row) != width:
             raise ConfigError("mask rows are ragged (unequal length)")
+        if any(
+            not isinstance(value, (int, float))
+            or isinstance(value, float) and not math.isfinite(value)
+            for value in row
+        ):
+            raise ConfigError("mask values must be finite numbers")
     return len(mask), width
 
 
@@ -47,6 +54,8 @@ def extract_centers(mask, *, min_area: int = 1):
     value = foreground. Components smaller than ``min_area`` are dropped.
     Results are sorted deterministically by ``(round(pixel_y), round(pixel_x))``.
     """
+    if isinstance(min_area, bool) or not isinstance(min_area, int) or min_area < 1:
+        raise ConfigError("min_area must be a positive integer")
     rows, cols = _validate(mask)
     if rows == 0 or cols == 0:
         return []

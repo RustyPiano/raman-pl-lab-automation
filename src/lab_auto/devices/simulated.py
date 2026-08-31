@@ -1,9 +1,10 @@
 import csv
+from collections.abc import Callable
 from pathlib import Path
 
 from lab_auto.devices.dfield_validation import validate_dfield_bin_roi, validate_dfield_capture_args
 from lab_auto.devices.optics_validation import validate_zolix_optics
-from lab_auto.errors import ConfigError
+from lab_auto.errors import ConfigError, WorkflowCancelled
 from lab_auto.workflow.data import CaptureFrame
 from lab_auto.devices.zolix_spectrometer import direct_to_front_bool
 
@@ -22,6 +23,7 @@ class SimulatedCamera:
         bin_x: int = 1,
         bin_y: int = 1,
         roi: tuple[int, int, int, int] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> CaptureFrame:
         validate_dfield_capture_args(
             read_mode=read_mode,
@@ -32,6 +34,8 @@ class SimulatedCamera:
             bin_y=bin_y,
             roi=roi,
         )
+        if should_cancel is not None and should_cancel():
+            raise WorkflowCancelled("simulated capture cancelled")
         if read_mode == "fvb":
             detector_width = 2048
             detector_height = 1

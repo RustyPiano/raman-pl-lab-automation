@@ -51,11 +51,12 @@ npm run build
 - 光谱图表展示
 - real 模式显式安全确认
 
-### 🚧 Phase B 待开发
+### ✅ Phase B 已完成
 
-- 托盘扫描
-- 设备监控
-- 历史记录
+- 托盘扫描：校验配置、托盘路径可视化、动作序列与统计；真实扫描在识别链路和现场标定完成前保持禁用
+- 设备监控：端口/设备扫描、驱动诊断、光源读回与全通道关闭
+- 历史记录：会话任务与持久化测量合并查询、搜索筛选、光谱详情、CSV/JSON/日志下载
+- 响应式控制台：桌面侧栏、移动端底部导航、API 状态与全局软件急停
 
 ## 项目结构
 
@@ -73,9 +74,9 @@ frontend/
 │   │   └── workflowStore.ts   # 工作流状态管理
 │   ├── views/
 │   │   ├── SinglePoint.tsx    # 单点测量页面
-│   │   ├── TrayScanning.tsx   # 托盘扫描（占位）
-│   │   ├── DeviceMonitoring.tsx # 设备监控（占位）
-│   │   └── History.tsx        # 历史记录（占位）
+│   │   ├── TrayScanning.tsx   # 托盘安全预演
+│   │   ├── DeviceMonitoring.tsx # 设备监控与安全关灯
+│   │   └── History.tsx        # 历史查询、光谱与下载
 │   ├── lib/
 │   │   └── utils.ts           # 工具函数
 │   ├── App.tsx                # 主应用组件

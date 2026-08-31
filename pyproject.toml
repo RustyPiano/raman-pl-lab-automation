@@ -15,7 +15,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest>=8.0",
-  "httpx>=0.27",
+  "httpx2>=0.1",
 ]
 # FastAPI backend (src/lab_auto/api). Install on any machine that runs scripts/start_api.*
 api = [

@@ -1,7 +1,7 @@
 @echo off
 REM Startup script for FastAPI backend on Windows
 
-cd /d "%~dp0"
+cd /d "%~dp0.."
 call .venv\Scripts\activate.bat
 
 set PYTHONPATH=src
@@ -17,6 +17,6 @@ echo Press Ctrl+C to stop the server
 echo ========================================
 echo.
 
-uvicorn lab_auto.api.main:app --host 127.0.0.1 --port 8008 --reload
+uvicorn lab_auto.api.main:app --host 127.0.0.1 --port 8008
 
 pause

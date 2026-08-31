@@ -1,30 +1,55 @@
 """Configuration management API endpoints."""
 import logging
-from pathlib import Path
+from typing import Literal
 
+import yaml
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from lab_auto.api.models import ConfigListResponse, ConfigValidationResponse
-from lab_auto.config import load_devices_config, load_workflow_config
+from lab_auto.api.paths import config_root, resolve_config_path
+from lab_auto.config import (
+    load_devices_config,
+    load_tray_scan_config,
+    load_workflow_config,
+    workflow_config_from_tray_scan,
+)
 from lab_auto.errors import ConfigError
+from lab_auto.workflow.raman import RamanWorkflow
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/configs", tags=["configs"])
 
 
 @router.get("", response_model=ConfigListResponse)
-async def list_configs(config_dir: str = "configs"):
+async def list_configs(config_type: Literal["all", "single_point", "tray"] = "all"):
     """List available configuration files."""
     try:
-        config_path = Path(config_dir)
+        config_path = config_root()
         if not config_path.exists():
-            raise HTTPException(status_code=404, detail=f"Config directory not found: {config_dir}")
+            raise HTTPException(status_code=404, detail=f"Config directory not found: {config_path}")
 
-        yaml_files = sorted([
-            str(f.relative_to(config_path))
-            for f in config_path.rglob("*.yaml")
-        ])
+        yaml_files = []
+        for path in [*config_path.rglob("*.yaml"), *config_path.rglob("*.yml")]:
+            if config_type in ("single_point", "tray"):
+                try:
+                    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+                except (OSError, UnicodeError, yaml.YAMLError):
+                    continue
+                required = {"devices_config", "sample", "optics", "acquisition", "output"}
+                is_tray = isinstance(data, dict) and "tray" in data
+                if not isinstance(data, dict) or not required.issubset(data) or is_tray != (config_type == "tray"):
+                    continue
+                if config_type == "tray":
+                    try:
+                        tray_config = load_tray_scan_config(path)
+                        RamanWorkflow.dry_run(
+                            workflow_config_from_tray_scan(tray_config)
+                        ).validate_single_point_config()
+                    except ConfigError:
+                        continue
+            yaml_files.append(str(path.relative_to(config_path)))
+        yaml_files.sort()
 
         return ConfigListResponse(configs=yaml_files)
     except HTTPException:
@@ -35,37 +60,21 @@ async def list_configs(config_dir: str = "configs"):
 
 
 @router.get("/{name:path}")
-async def get_config(name: str, config_dir: str = "configs"):
+async def get_config(name: str):
     """Read a configuration file.
 
     Security: This endpoint uses Path.resolve() and relative_to() to prevent
     path traversal attacks, including symlinks, URL encoding, and Windows paths.
     """
     try:
-        # Resolve base directory to absolute path (follows symlinks)
-        config_base = Path(config_dir).resolve()
-
-        # Resolve requested path to absolute path
-        config_path = (config_base / name).resolve()
-
-        # Security: Ensure final path is within the allowed directory
-        # This check prevents:
-        # - Path traversal: ../../../etc/passwd
-        # - Symlink escapes: configs/link -> /etc/passwd
-        # - Windows paths: C:\Windows\System32\config
-        # - URL encoding: ..%2F..%2Fetc%2Fpasswd
         try:
-            config_path.relative_to(config_base)
-        except ValueError:
-            logger.warning(f"Path traversal attempt blocked: {name} -> {config_path}")
+            config_path = resolve_config_path(name)
+        except ConfigError:
+            logger.warning("Invalid configuration path blocked: %s", name)
             raise HTTPException(status_code=400, detail="Invalid config path")
 
-        if not config_path.exists():
+        if not config_path.is_file():
             raise HTTPException(status_code=404, detail=f"Config not found: {name}")
-
-        # Security: Only allow YAML files (prevent reading .git/config, .env, etc.)
-        if config_path.suffix not in {".yaml", ".yml"}:
-            raise HTTPException(status_code=400, detail="Only YAML files are supported")
 
         content = config_path.read_text(encoding="utf-8")
         return {"name": name, "content": content}
@@ -88,15 +97,19 @@ async def validate_config(request: ConfigValidateRequest):
     """Validate a configuration file."""
     try:
         errors = []
+        try:
+            config_path = resolve_config_path(request.config_path)
+        except ConfigError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
         if request.config_type == "devices":
             try:
-                load_devices_config(Path(request.config_path))
+                load_devices_config(config_path)
             except ConfigError as e:
                 errors.append(str(e))
         elif request.config_type == "workflow":
             try:
-                load_workflow_config(Path(request.config_path))
+                load_workflow_config(config_path)
             except ConfigError as e:
                 errors.append(str(e))
         else:

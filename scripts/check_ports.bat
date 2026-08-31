@@ -1,6 +1,8 @@
 @echo off
 REM Check available COM ports on Windows
 
+cd /d "%~dp0.."
+
 echo ========================================
 echo  COM Port Detection
 echo ========================================

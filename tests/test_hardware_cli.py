@@ -1,11 +1,12 @@
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from lab_auto.cli import main
-from lab_auto.config import load_devices_config
+from lab_auto.config import load_devices_config, load_workflow_config
 from lab_auto.devices.factory import DeviceFactory
-from lab_auto.errors import DeviceError, SafetyError
+from lab_auto.errors import ConfigError, DeviceError, SafetyError
 
 
 def write_devices_config(path: Path):
@@ -286,32 +287,60 @@ def test_factory_closes_stage_if_spectrometer_creation_fails():
     factory = PartiallyFailingFactory()
 
     with pytest.raises(DeviceError, match="spectrometer failed"):
-        factory.create_single_point_workflow(workflow_config=None, devices_config=None)
+        factory.create_single_point_workflow(
+            workflow_config=load_workflow_config("configs/single_point.example.yaml"),
+            devices_config=None,
+        )
 
     assert factory.stage.closed is True
 
 
-def test_factory_rejects_non_manual_light_control_for_phase1_real_workflow(tmp_path: Path):
+def test_config_rejects_manual_light_without_confirmation(tmp_path: Path):
     devices = tmp_path / "devices.real.yaml"
     write_devices_config(devices)
     devices.write_text(devices.read_text(encoding="utf-8").replace("manual_light_control: true", "manual_light_control: false"), encoding="utf-8")
-    config = load_devices_config(devices)
 
-    with pytest.raises(DeviceError, match="manual_light_control=true"):
-        DeviceFactory().create_light(config)
+    with pytest.raises(ConfigError, match="manual_light_control=true"):
+        load_devices_config(devices)
 
 
-def test_real_workflow_rejects_non_manual_light_before_opening_devices(tmp_path: Path):
-    devices = tmp_path / "devices.real.yaml"
-    write_devices_config(devices)
-    devices.write_text(devices.read_text(encoding="utf-8").replace("manual_light_control: true", "manual_light_control: false"), encoding="utf-8")
-    config = load_devices_config(devices)
+def test_factory_validates_workflow_before_opening_devices():
+    workflow = load_workflow_config("configs/single_point.example.yaml")
+    workflow = replace(
+        workflow,
+        acquisition=replace(workflow.acquisition, exposure_ms=60_001),
+    )
     factory = LightSafetyFactory()
 
-    with pytest.raises(DeviceError, match="manual_light_control=true"):
-        factory.create_single_point_workflow(workflow_config=None, devices_config=config)
+    with pytest.raises(ConfigError, match="safety cap"):
+        factory.create_single_point_workflow(workflow, devices_config=None)
 
     assert factory.calls == []
+
+
+def test_dry_run_diagnostics_do_not_load_vendor_libraries(tmp_path):
+    config = load_devices_config("configs/devices.example.yaml")
+    zolix = tmp_path / "zolix.dll"
+    dfield = tmp_path / "dfield.dll"
+    zolix.touch()
+    dfield.touch()
+    config = replace(
+        config,
+        spectrometer=replace(config.spectrometer, dll_path=zolix),
+        camera=replace(config.camera, dll_path=dfield),
+    )
+
+    class NoProbeFactory(DeviceFactory):
+        def _can_load_zolix(self, dll_path):
+            raise AssertionError("dry-run must not load the Zolix DLL")
+
+        def _can_load_dfield(self, dll_path):
+            raise AssertionError("dry-run must not load the DField DLL")
+
+    factory = NoProbeFactory()
+
+    assert factory.run_doctor(config)["zolix_loadable"] is False
+    assert factory.run_scan(config)["dfield_available"] is False
 
 
 class FakeDeviceFactory:

@@ -63,7 +63,7 @@ def test_scan_tray_real_routes_through_factory(tmp_path: Path, capsys):
     devices = tmp_path / "devices.yaml"
     scan = tmp_path / "tray_scan.yaml"
     write_devices_config(devices)
-    write_scan_config(scan, devices, tmp_path / "out")
+    write_scan_config(scan, tmp_path / "unused-devices.yaml", tmp_path / "out")
     factory = FakeScanFactory()
 
     exit_code = main(
@@ -73,6 +73,7 @@ def test_scan_tray_real_routes_through_factory(tmp_path: Path, capsys):
 
     assert exit_code == 0
     assert factory.created is True
+    assert factory.scan_config.devices_config == devices
     assert factory.workflow.calls == [("run", False), ("close",)]
 
 
@@ -151,10 +152,12 @@ def test_scan_tray_invalid_per_point_config_rejected_early(tmp_path: Path, capsy
 class FakeScanFactory:
     def __init__(self, *, raise_safety: bool = False):
         self.created = False
+        self.scan_config = None
         self.workflow = FakeScanWorkflow(raise_safety=raise_safety)
 
     def create_tray_scan_workflow(self, scan_config, devices_config):
         self.created = True
+        self.scan_config = scan_config
         return self.workflow
 
 

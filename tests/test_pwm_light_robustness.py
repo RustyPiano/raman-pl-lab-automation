@@ -1,6 +1,8 @@
 """Robustness of the PwmModbusLight adapter: RTU de-sync self-heal, read-timeout
 deadline, whole-sweep off-retry, and the side-effect-free read/close paths."""
 
+from dataclasses import replace
+
 import pytest
 
 from lab_auto.config import LightConfig, PwmChannel
@@ -186,7 +188,8 @@ def test_read_hardware_state_reads_registers_without_writing_channels():
 
     assert state["voltage_register"] == 50
     assert state["channel_states"] == {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
-    assert state["laser_state"] == "unknown"
+    assert state["laser_state"] == "off_confirmed"
+    assert state["led_state"] == "off_confirmed"
     assert not [f for f in slave.requests if f[1] == mb.WRITE_SINGLE]
 
 
@@ -196,6 +199,18 @@ def test_read_hardware_state_dry_run_returns_software_state():
 
     assert light.read_hardware_state() == {"laser_state": "unknown", "led_state": "unknown"}
     assert slave.requests == []
+
+
+def test_read_hardware_state_allows_optional_led_mapping():
+    slave = _Slave(registers=_healthy_registers())
+    light = PwmModbusLight(
+        replace(CONFIG, channels={"laser": LASER}), transport=slave, dry_run=False
+    )
+
+    state = light.read_hardware_state()
+
+    assert state["laser_state"] == "off_confirmed"
+    assert state["led_state"] == "unknown"
 
 
 # --- close(all_off=...) ------------------------------------------------
@@ -234,6 +249,17 @@ def test_safety_reset_drives_all_channels_off():
         assert slave.registers[mb.output_state_register(ch)] == 0
 
 
+def test_safety_reset_turns_configured_laser_channel_off_first():
+    slave = _Slave(registers=_healthy_registers())
+    light = _adapter(slave)
+
+    light.safety_reset()
+
+    first_write = next(request for request in slave.requests if request[1] == mb.WRITE_SINGLE)
+    first_address = (first_write[2] << 8) | first_write[3]
+    assert first_address == mb.output_state_register(LASER.channel)
+
+
 def test_safety_reset_raises_when_channel_cannot_be_confirmed_off():
     laser_reg = mb.output_state_register(LASER.channel)
 
@@ -252,6 +278,25 @@ def test_safety_reset_raises_when_channel_cannot_be_confirmed_off():
     with pytest.raises(DeviceError, match="safety reset"):
         light.safety_reset()
     assert light.laser_state == "manual_wait"
+
+
+def test_safety_reset_fails_for_unconfigured_physical_channel():
+    unconfigured_reg = mb.output_state_register(5)
+
+    class StuckSlave(_Slave):
+        def write(self, data):
+            if data[1] == mb.WRITE_SINGLE and ((data[2] << 8) | data[3]) == unconfigured_reg:
+                self.requests.append(bytes(data))
+                self.writes += 1
+                self._out += bytes(data)
+                return
+            super().write(data)
+
+    slave = StuckSlave(registers={**_healthy_registers(), unconfigured_reg: 1})
+    light = _adapter(slave)
+
+    with pytest.raises(DeviceError, match="channel"):
+        light.safety_reset()
 
 
 def test_safety_reset_dry_run_marks_off_without_io():

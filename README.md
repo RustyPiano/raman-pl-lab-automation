@@ -43,7 +43,7 @@
   - real 模式安全确认对话框
   - 类型安全错误处理
 
-- ✅ **当前验证**：`pytest -q` 393 passed；`npm run build` passed
+- ✅ **当前验证**：`pytest -q` 517 passed；`npm run lint`、`npm run build` passed
 
 - ✅ **跨平台支持**：macOS + Windows 完全兼容
   - 提供完整的 Windows 部署文档和脚本
@@ -68,7 +68,7 @@ scripts\start_frontend.bat
 ### 待办事项
 
 - **真机验收未执行**：Phase 1 硬件验收见 `docs/phase1-hardware-acceptance.md`；Phase 2 M1 PWM 光源硬件验收见 `docs/phase2-hardware-acceptance.md`。两者都需在实验室 Windows 64 位机器上执行。
-- **Phase B 规划**：托盘扫描 UI、设备监控面板、历史记录查询
+- **Phase B Web UI 已完成**：托盘安全预演、设备监控/扫描/全关、历史查询/筛选/光谱/文件下载；真实托盘扫描仍等待识别链路和现场标定
 - **Phase 2 M2 规划**：Mapping 区域扫描工作流 + CLI
 
 ## 开发入口

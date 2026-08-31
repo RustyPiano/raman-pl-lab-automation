@@ -1,60 +1,141 @@
 """Workflow execution API endpoints."""
 import logging
-from pathlib import Path
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, WebSocketException
 
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
-
-from lab_auto.api.models import JobStatus, SinglePointRequest
+from lab_auto.api.models import JobStatus, SinglePointRequest, TrayPreviewRequest, TrayPreviewResponse
+from lab_auto.api.paths import resolve_config_path
 from lab_auto.api.task_queue import task_queue
 from lab_auto.api.websocket import manager
-from lab_auto.config import load_workflow_and_devices
+from lab_auto.config import (
+    load_tray_scan_config,
+    load_workflow_and_devices,
+    load_workflow_config,
+    validate_sample_id,
+    workflow_config_from_tray_scan,
+)
 from lab_auto.errors import ConfigError
+from lab_auto.scan.tray import wafer_centers
+from lab_auto.workflow.raman import RamanWorkflow
+from lab_auto.workflow.tray_scan import TrayScanWorkflow, simulated_mask_provider
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/workflow", tags=["workflow"])
+
+
+@router.post("/tray/preview", response_model=TrayPreviewResponse)
+async def preview_tray_scan(request: TrayPreviewRequest):
+    """Validate and plan a tray scan without opening devices or moving hardware."""
+    try:
+        config_path = resolve_config_path(request.config_path)
+        if not config_path.is_file():
+            raise HTTPException(status_code=404, detail=f"Config not found: {request.config_path}")
+        config = load_tray_scan_config(config_path)
+        RamanWorkflow.dry_run(
+            workflow_config_from_tray_scan(config)
+        ).validate_single_point_config()
+        wafers = wafer_centers(config.tray)
+        actions = TrayScanWorkflow.dry_run(
+            config,
+            mask_provider=simulated_mask_provider(config.min_area),
+        ).plan()
+    except HTTPException:
+        raise
+    except ConfigError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid tray configuration: {exc}")
+
+    return TrayPreviewResponse(
+        config_path=request.config_path,
+        sample_id=config.sample.id,
+        operator=config.sample.operator,
+        layout={
+            "rows": config.tray.rows,
+            "cols": config.tray.cols,
+            "pitch_x_um": config.tray.pitch_x_um,
+            "pitch_y_um": config.tray.pitch_y_um,
+            "order": config.tray.order,
+        },
+        pattern={
+            "repeats_per_point": config.pattern.repeats_per_point,
+            "surrounding_count": config.pattern.surrounding_count,
+            "surrounding_distance_um": config.pattern.surrounding_distance_um,
+            "burn_threshold": config.pattern.burn_threshold,
+        },
+        wafers=[
+            {
+                "index": wafer.index,
+                "row": wafer.row,
+                "col": wafer.col,
+                "x_um": wafer.x_um,
+                "y_um": wafer.y_um,
+            }
+            for wafer in wafers
+        ],
+        actions=actions,
+        summary={
+            "wafer_count": len(wafers),
+            "sample_centers": sum(action.startswith("return_wafer_center:") for action in actions),
+            "measurement_points": sum(action.startswith("move_point:") for action in actions),
+            "acquisitions": sum(action.startswith("measure:") for action in actions),
+            "burn_checks": sum(action.startswith("burn_check:") for action in actions),
+            "action_count": len(actions),
+        },
+        real_available=False,
+        real_unavailable_reason=(
+            "Real tray scan requires a camera-to-recognition mask provider and verified "
+            "hardware calibration; neither is wired into the Web workflow yet."
+        ),
+    )
 
 
 @router.post("/single-point", response_model=JobStatus)
 async def start_single_point(request: SinglePointRequest):
     """Start a single-point Raman measurement."""
     try:
-        # Validate config paths exist
-        config_path = Path(request.config_path)
-        if not config_path.exists():
-            raise HTTPException(status_code=404, detail=f"Config not found: {request.config_path}")
-
-        if request.devices_path:
-            devices_path = Path(request.devices_path)
-            if not devices_path.exists():
-                raise HTTPException(status_code=404, detail=f"Devices config not found: {request.devices_path}")
-
         if request.confirm_real and request.mode != "real":
             raise HTTPException(
                 status_code=400,
                 detail="confirm_real=true is only valid in real mode",
             )
-
         if request.mode == "real" and not request.confirm_real:
             raise HTTPException(status_code=400, detail="Real mode requires confirm_real=true")
 
-        if request.mode == "real":
-            # Reject a manual light source up front: its terminal confirmation
-            # prompt (input()) would hang the server thread. Web real mode needs
-            # a pwm_modbus source with programmatic laser control.
-            try:
-                _, devices_config = load_workflow_and_devices(
-                    request.config_path, devices_override=request.devices_path
-                )
-            except ConfigError as e:
-                raise HTTPException(status_code=400, detail=f"Invalid configuration: {e}")
-            if devices_config.light.type == "manual":
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "Web API real mode requires a pwm_modbus light source; a manual light "
-                        "needs terminal confirmation which would hang the server"
-                    ),
-                )
+        try:
+            config_path = resolve_config_path(request.config_path)
+        except ConfigError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        if not config_path.exists():
+            raise HTTPException(status_code=404, detail=f"Config not found: {request.config_path}")
+
+        try:
+            workflow_config = load_workflow_config(config_path)
+            devices_path = resolve_config_path(request.devices_path or workflow_config.devices_config)
+        except ConfigError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid configuration: {exc}")
+        if not devices_path.exists():
+            raise HTTPException(status_code=404, detail=f"Devices config not found: {devices_path.name}")
+
+        try:
+            _, devices_config = load_workflow_and_devices(
+                config_path, devices_override=devices_path
+            )
+            RamanWorkflow.dry_run(workflow_config).validate_single_point_config()
+            if request.sample_id is not None:
+                validate_sample_id(request.sample_id.strip())
+            if request.operator is not None and not request.operator.strip():
+                raise ConfigError("operator override cannot be empty")
+        except ConfigError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid configuration: {e}")
+
+        # Reject a manual light source up front: its terminal confirmation prompt
+        # would hang the server thread. Web real mode needs programmatic control.
+        if request.mode == "real" and devices_config.light.type == "manual":
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Web API real mode requires a pwm_modbus light source; a manual light "
+                    "needs terminal confirmation which would hang the server"
+                ),
+            )
 
         # Create job
         job_id = task_queue.create_job("single_point")
@@ -62,10 +143,13 @@ async def start_single_point(request: SinglePointRequest):
         # Submit to queue
         await task_queue.submit_single_point(
             job_id=job_id,
-            config_path=request.config_path,
-            devices_path=request.devices_path,
+            config_path=str(config_path),
+            devices_path=str(devices_path),
             mode=request.mode,
             confirm_real=request.confirm_real,
+            sample_id=request.sample_id,
+            operator=request.operator,
+            subtract_background=request.subtract_background,
         )
 
         job = task_queue.get_job(job_id)
@@ -114,16 +198,19 @@ async def stop_job(job_id: str):
 @router.websocket("/ws/jobs/{job_id}")
 async def websocket_job_progress(websocket: WebSocket, job_id: str):
     """WebSocket endpoint for real-time job progress updates."""
+    job = task_queue.get_job(job_id)
+    if job is None:
+        raise WebSocketException(code=4404, reason="Job not found")
     await manager.connect(websocket, job_id)
     try:
         # Send initial job status
-        job = task_queue.get_job(job_id)
-        if job:
-            await websocket.send_json({
-                "type": "status",
-                "status": job.status,
-                "progress": job.progress.model_dump(),
-            })
+        await websocket.send_json({
+            "type": "status",
+            "status": job.status,
+            "progress": job.progress.model_dump(),
+            "result": job.result,
+            "error": job.error,
+        })
 
         # Keep connection alive and wait for messages
         while True:

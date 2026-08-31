@@ -1,11 +1,12 @@
 #!/bin/bash
 # Startup script for React frontend
+set -euo pipefail
 
-cd "$(dirname "$0")/frontend"
+cd "$(dirname "$0")/../frontend"
 
 if [ ! -d "node_modules" ]; then
     echo "Installing dependencies..."
-    npm install
+    npm ci
 fi
 
 echo "Starting Vite dev server on http://localhost:5173"

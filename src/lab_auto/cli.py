@@ -364,6 +364,7 @@ def main(argv: Sequence[str] | None = None, *, factory: DeviceFactory | None = N
             RamanWorkflow.dry_run(workflow_config_from_tray_scan(scan_config)).validate_single_point_config()
             devices_path = args.devices_config or scan_config.devices_config
             devices_config = load_devices_config(devices_path)
+            scan_config = replace(scan_config, devices_config=Path(devices_path))
             mode = resolve_runtime_mode(devices_config.runtime.mode, cli_real=args.real, cli_dry_run=args.dry_run, cli_simulated=args.simulated)
             devices_config = _with_runtime_mode(devices_config, mode)
             print(f"devices_config:{devices_path}")
@@ -375,7 +376,10 @@ def main(argv: Sequence[str] | None = None, *, factory: DeviceFactory | None = N
                 finally:
                     workflow.close()
                 return 0
-            preview = TrayScanWorkflow.dry_run(scan_config, mask_provider=simulated_mask_provider())
+            preview = TrayScanWorkflow.dry_run(
+                scan_config,
+                mask_provider=simulated_mask_provider(scan_config.min_area),
+            )
             for action in preview.plan():
                 print(action)
             return 0

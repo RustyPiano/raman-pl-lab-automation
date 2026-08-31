@@ -1,14 +1,25 @@
 import asyncio
+from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from fastapi import HTTPException
+import yaml
+from fastapi import HTTPException, WebSocketException
 
 import lab_auto.api.task_queue as task_queue_module
 from lab_auto.api.models import JobProgress, JobStatus, SinglePointRequest
 from lab_auto.api.routers import workflow
 from lab_auto.api.task_queue import TaskQueue
+from lab_auto.config import load_workflow_config
 from lab_auto.errors import ConfigError, WorkflowCancelled
+
+
+def _valid_workflow_config(devices_path):
+    return replace(
+        load_workflow_config("configs/single_point.example.yaml"),
+        devices_config=Path(devices_path),
+    )
 
 
 def test_single_point_request_defaults_to_dry_run():
@@ -62,7 +73,13 @@ def test_real_confirmation_is_passed_to_queue(tmp_path, monkeypatch):
             )
 
     queue = QueueStub()
+    monkeypatch.setenv("LAB_AUTO_CONFIG_DIR", str(tmp_path))
     monkeypatch.setattr(workflow, "task_queue", queue)
+    monkeypatch.setattr(
+        workflow,
+        "load_workflow_config",
+        lambda *args, **kwargs: _valid_workflow_config(config),
+    )
     # Real mode now loads the devices config to reject a manual light; give it a
     # pwm_modbus source so the confirmed real request is accepted and forwarded.
     monkeypatch.setattr(
@@ -79,6 +96,31 @@ def test_real_confirmation_is_passed_to_queue(tmp_path, monkeypatch):
     assert queue.submitted["confirm_real"] is True
 
 
+def test_router_rejects_invalid_acquisition_before_queueing(tmp_path, monkeypatch):
+    devices = tmp_path / "devices.yaml"
+    devices.write_text(Path("configs/devices.example.yaml").read_text(encoding="utf-8"))
+    data = yaml.safe_load(Path("configs/single_point.example.yaml").read_text(encoding="utf-8"))
+    data["devices_config"] = "devices.yaml"
+    data["acquisition"]["exposure_ms"] = 60_001
+    (tmp_path / "single.yaml").write_text(yaml.safe_dump(data))
+
+    class QueueStub:
+        created = False
+
+        def create_job(self, job_type):
+            self.created = True
+
+    queue = QueueStub()
+    monkeypatch.setenv("LAB_AUTO_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(workflow, "task_queue", queue)
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(workflow.start_single_point(SinglePointRequest(config_path="single.yaml")))
+
+    assert exc_info.value.status_code == 400
+    assert queue.created is False
+
+
 def test_queue_passes_real_confirmation_to_workflow(monkeypatch):
     queue = TaskQueue()
     real_workflow = RealWorkflowStub()
@@ -87,7 +129,14 @@ def test_queue_passes_real_confirmation_to_workflow(monkeypatch):
         def create_single_point_workflow(self, workflow_config, devices_config):
             return real_workflow
 
-    monkeypatch.setattr(task_queue_module, "load_workflow_and_devices", lambda *args, **kwargs: (object(), object()))
+    monkeypatch.setattr(
+        task_queue_module,
+        "load_workflow_and_devices",
+        lambda *args, **kwargs: (
+            _valid_workflow_config("devices.yaml"),
+            SimpleNamespace(light=SimpleNamespace(type="pwm_modbus")),
+        ),
+    )
     queue._factory = FactoryStub()
 
     result = queue._run_single_point_sync("config.yaml", None, "real", True, "job-1")
@@ -103,6 +152,50 @@ def test_submit_single_point_rejects_unconfirmed_real_mode():
         asyncio.run(queue.submit_single_point("job-1", "config.yaml", None, "real"))
 
     assert queue._queue.empty()
+
+
+def test_task_queue_uses_one_hardware_worker():
+    assert TaskQueue()._executor._max_workers == 1
+
+
+def test_task_queue_prunes_old_terminal_jobs():
+    queue = TaskQueue()
+    first = None
+    for _ in range(101):
+        job_id = queue.create_job("single_point")
+        first = first or job_id
+        queue.get_job(job_id).status = "completed"
+
+    assert len(queue.list_jobs()) == 100
+    assert queue.get_job(first) is None
+
+
+def test_simulated_result_contains_spectrum_and_applies_overrides(tmp_path):
+    data = yaml.safe_load(Path("configs/single_point.example.yaml").read_text(encoding="utf-8"))
+    data["output"]["directory"] = str(tmp_path / "output")
+    workflow_path = tmp_path / "single.yaml"
+    workflow_path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    devices_path = Path("configs/devices.example.yaml").resolve()
+    queue = TaskQueue()
+
+    result = queue._run_single_point_sync(
+        str(workflow_path),
+        str(devices_path),
+        "simulated",
+        False,
+        "job-1",
+        sample_id="override-001",
+        operator="测试员",
+        subtract_background=False,
+    )
+
+    assert result["spectrum"]["raw"]
+    assert result["spectrum"]["corrected"] is None
+    assert len(result["x"]) == len(result["spectrum"]["raw"])
+    assert result["metadata"]["sample_id"] == "override-001"
+    assert result["metadata"]["operator"] == "测试员"
+    assert queue._active_devices_path is None
+    assert queue.safety_devices_path() == devices_path
 
 
 def test_run_single_point_sync_rejects_unconfirmed_real_mode(monkeypatch):
@@ -289,23 +382,30 @@ def test_worker_top_level_error_fails_job_and_calls_task_done(monkeypatch):
     asyncio.run(scenario())
 
 
-def test_cancel_all_signals_running_and_stops_pending():
+def test_cancel_all_signals_broadcasts_and_updates_statuses(monkeypatch):
     queue = TaskQueue()
+    recorder = BroadcastRecorder()
+    monkeypatch.setattr(task_queue_module, "manager", recorder)
 
-    pending = queue.create_job("single_point")
-    running = queue.create_job("single_point")
-    queue.get_job(running).status = "running"
-    finished = queue.create_job("single_point")
-    queue.get_job(finished).status = "completed"
+    async def scenario():
+        pending = queue.create_job("single_point")
+        running = queue.create_job("single_point")
+        queue.get_job(running).status = "running"
+        finished = queue.create_job("single_point")
+        queue.get_job(finished).status = "completed"
 
-    affected = queue.cancel_all()
+        affected = await queue.cancel_all()
 
-    assert set(affected) == {pending, running}
-    assert queue.get_job(pending).status == "stopped"
-    assert queue.get_job(running).status == "running"  # cooperative, not forced
-    assert queue._cancel_events[pending].is_set()
-    assert queue._cancel_events[running].is_set()
-    assert finished not in affected
+        assert set(affected) == {pending, running}
+        assert queue.get_job(pending).status == "stopped"
+        assert queue.get_job(running).status == "stopping"
+        assert queue._cancel_events[pending].is_set()
+        assert queue._cancel_events[running].is_set()
+        assert finished not in affected
+        statuses = {job_id: message["status"] for job_id, message in recorder.messages}
+        assert statuses == {pending: "stopped", running: "stopping"}
+
+    asyncio.run(scenario())
 
 
 # --- hardware-busy tracking (is_hardware_busy / _active_job_id) -------------
@@ -381,6 +481,12 @@ def test_router_rejects_confirm_real_in_dry_run(tmp_path):
 def test_router_rejects_real_mode_manual_light(tmp_path, monkeypatch):
     config = tmp_path / "single.yaml"
     config.write_text("sample: {id: sample-001}\n", encoding="utf-8")
+    monkeypatch.setenv("LAB_AUTO_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        workflow,
+        "load_workflow_config",
+        lambda *args, **kwargs: _valid_workflow_config(config),
+    )
     monkeypatch.setattr(
         workflow,
         "load_workflow_and_devices",
@@ -416,3 +522,10 @@ def test_run_single_point_sync_rejects_real_manual_light(monkeypatch):
 
     with pytest.raises(ConfigError, match="pwm_modbus"):
         queue._run_single_point_sync("config.yaml", None, "real", True, "job-1")
+
+
+def test_websocket_rejects_unknown_job_before_accepting():
+    with pytest.raises(WebSocketException) as exc_info:
+        asyncio.run(workflow.websocket_job_progress(object(), "does-not-exist"))
+
+    assert exc_info.value.code == 4404

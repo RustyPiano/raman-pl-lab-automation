@@ -326,10 +326,15 @@ class WaynelabsStage:
         # wrong way records the far limit as origin 0.0 and inverts the whole axis
         # (soft limits then guard the wrong side). Refuse any direction that doesn't
         # match the configured, on-rig-verified safe home direction.
-        if self.config.home_direction is not None and direction != self.config.home_direction:
+        if self.config.home_direction is None:
+            if not self.dry_run:
+                raise SafetyError(
+                    f"axis {axis} has no configured safe home direction; verify it on the rig before homing"
+                )
+        elif direction != self.config.home_direction[axis]:
             raise SafetyError(
                 f"home direction {direction!r} does not match the configured safe home "
-                f"direction {self.config.home_direction!r} for axis {axis}"
+                f"direction {self.config.home_direction[axis]!r} for axis {axis}"
             )
         try:
             command = self.protocol.build_home_command(axis=axis, speed=speed, direction=direction)

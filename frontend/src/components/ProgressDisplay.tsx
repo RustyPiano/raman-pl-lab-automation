@@ -1,58 +1,56 @@
 import { Progress } from '@/components/ui/progress';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useWorkflowStore } from '@/stores/workflowStore';
 
 export function ProgressDisplay() {
-  const { currentJob, logs } = useWorkflowStore();
+  const currentJob = useWorkflowStore((state) => state.currentJob);
+  const logs = useWorkflowStore((state) => state.logs);
 
   if (!currentJob) {
     return null;
   }
 
   const { progress, current_step, status } = currentJob;
+  const stepLabel = current_step ? ({
+    initializing: '初始化',
+    executing: '执行测量',
+    saving: '保存结果',
+    completed: '已完成',
+  }[current_step] ?? current_step) : '初始化…';
 
-  const statusColor = {
-    pending: 'text-gray-500',
-    running: 'text-blue-600',
-    stopping: 'text-amber-600',
-    completed: 'text-green-600',
-    failed: 'text-red-600',
-    stopped: 'text-amber-600',
-  }[status] || 'text-gray-500';
-
-  const statusEmoji = {
-    pending: '⏳',
-    running: '▶️',
-    stopping: '🟡',
-    completed: '✅',
-    failed: '❌',
-    stopped: '⏹️',
-  }[status] || '⏸️';
+  const statusConfig = {
+    pending: { label: '等待中', variant: 'outline' },
+    running: { label: '运行中', variant: 'default' },
+    stopping: { label: '安全停止中', variant: 'secondary' },
+    completed: { label: '已完成', variant: 'secondary' },
+    failed: { label: '失败', variant: 'destructive' },
+    stopped: { label: '已停止', variant: 'outline' },
+  }[status] as { label: string; variant: 'default' | 'secondary' | 'outline' | 'destructive' };
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <span className={statusColor}>{statusEmoji}</span>
-          <span>任务进度</span>
-        </CardTitle>
+        <div className="flex items-center justify-between gap-3">
+          <CardTitle>任务进度</CardTitle>
+          <Badge variant={statusConfig.variant}>{statusConfig.label}</Badge>
+        </div>
+        <CardDescription className="truncate">任务 {currentJob.id}</CardDescription>
       </CardHeader>
-      <CardContent className="space-y-4">
-        {/* Progress bar */}
-        <div className="space-y-2">
+      <CardContent className="flex flex-col gap-4">
+        <div className="flex flex-col gap-2">
           <div className="flex justify-between text-sm">
             <span className="font-medium">{Math.round(progress)}%</span>
-            <span className="text-muted-foreground">{current_step || '初始化...'}</span>
+            <span className="text-muted-foreground">{stepLabel}</span>
           </div>
           <Progress value={progress} className="h-3" />
         </div>
 
-        {/* Log window */}
-        <div className="bg-slate-950 text-slate-50 rounded-md p-4 font-mono text-xs h-64 overflow-y-auto">
+        <div className="h-64 overflow-y-auto rounded-md bg-foreground p-4 font-mono text-xs text-background">
           {logs.length === 0 ? (
-            <div className="text-slate-400 text-center mt-24">等待日志...</div>
+            <div className="mt-24 text-center text-background/60">等待日志…</div>
           ) : (
-            <div className="space-y-1">
+            <div className="flex flex-col gap-1">
               {logs.map((log, index) => (
                 <div key={index} className="whitespace-pre-wrap">
                   {log}

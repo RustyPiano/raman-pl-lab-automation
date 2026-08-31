@@ -5,7 +5,9 @@ malformed setpoint. The 5.0 V cap is sourced from ``raw/pwm_modbus`` so there is
 single source of truth.
 """
 
-from lab_auto.devices.raw.pwm_modbus import MAX_VOLTAGE_DECIVOLT, register_to_voltage
+import math
+
+from lab_auto.devices.raw.pwm_modbus import MAX_VOLTAGE_DECIVOLT, register_to_voltage, voltage_to_register
 from lab_auto.errors import ConfigError
 
 MAX_OUTPUT_VOLTAGE_V = register_to_voltage(MAX_VOLTAGE_DECIVOLT)  # 5.0 V
@@ -16,14 +18,22 @@ def validate_pwm_light_config(light) -> None:
         raise ConfigError("pwm_modbus backend requires manual_light_control=false")
     if light.station_id is None or light.station_id < 1 or light.station_id > 247:
         raise ConfigError("pwm_modbus station_id must be between 1 and 247 (0 is forbidden)")
-    if light.max_output_voltage_v is None or light.max_output_voltage_v > MAX_OUTPUT_VOLTAGE_V:
-        raise ConfigError(f"max_output_voltage_v must not exceed {MAX_OUTPUT_VOLTAGE_V} V")
-    if light.required_output_voltage_v is None:
-        raise ConfigError("pwm_modbus requires required_output_voltage_v")
+    if light.max_output_voltage_v is None or not (0 < light.max_output_voltage_v <= MAX_OUTPUT_VOLTAGE_V):
+        raise ConfigError(f"max_output_voltage_v must be positive and not exceed {MAX_OUTPUT_VOLTAGE_V} V")
+    if light.required_output_voltage_v is None or light.required_output_voltage_v <= 0:
+        raise ConfigError("required_output_voltage_v must be positive")
     if light.required_output_voltage_v > light.max_output_voltage_v:
         raise ConfigError("required_output_voltage_v must not exceed max_output_voltage_v")
+    for name, value in (
+        ("max_output_voltage_v", light.max_output_voltage_v),
+        ("required_output_voltage_v", light.required_output_voltage_v),
+    ):
+        if not math.isclose(register_to_voltage(voltage_to_register(value)), value, abs_tol=1e-9):
+            raise ConfigError(f"{name} must use the controller's 0.1 V resolution")
     if not light.port:
         raise ConfigError("pwm_modbus requires a serial port")
+    if light.baudrate is None or light.baudrate <= 0:
+        raise ConfigError("pwm_modbus baudrate must be positive")
     channels = light.channels or {}
     if "laser" not in channels:
         raise ConfigError("pwm_modbus requires a 'laser' channel mapping")
@@ -36,9 +46,11 @@ def validate_pwm_light_config(light) -> None:
                 f"channel index {channel.channel} is shared by '{seen_indices[channel.channel]}' and '{name}'"
             )
         seen_indices[channel.channel] = name
-        if channel.frequency_hz <= 0:
-            raise ConfigError(f"frequency_hz for '{name}' must be positive")
+        if channel.frequency_hz <= 0 or channel.frequency_hz > 0xFFFFFFFF:
+            raise ConfigError(f"frequency_hz for '{name}' must be between 1 and 4294967295")
         if not (0.0 <= channel.duty_percent <= 100.0):
             raise ConfigError(f"duty_percent for '{name}' must be between 0 and 100")
+        if not math.isclose(round(channel.duty_percent * 10) / 10, channel.duty_percent, abs_tol=1e-9):
+            raise ConfigError(f"duty_percent for '{name}' must use the controller's 0.1% resolution")
         if channel.default_off_required is not True:
             raise ConfigError(f"channel '{name}' must set default_off_required: true")

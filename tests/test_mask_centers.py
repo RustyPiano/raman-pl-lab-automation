@@ -105,3 +105,14 @@ def test_string_row_rejected_not_read_as_foreground():
 def test_non_grid_rejected():
     with pytest.raises(ConfigError):
         extract_centers("not a grid")
+
+
+@pytest.mark.parametrize("mask", [[[0, "1"]], [[0, float("nan")]]])
+def test_non_numeric_or_non_finite_values_are_rejected(mask):
+    with pytest.raises(ConfigError, match="finite numbers"):
+        extract_centers(mask)
+
+
+def test_invalid_min_area_is_rejected():
+    with pytest.raises(ConfigError, match="positive integer"):
+        extract_centers([[1]], min_area=0)

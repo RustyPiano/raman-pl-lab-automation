@@ -1,11 +1,10 @@
 """Device management API endpoints."""
 import asyncio
 import logging
-from pathlib import Path
-
 from fastapi import APIRouter, HTTPException
 
 from lab_auto.api.models import DeviceStatusResponse, LightStatusResponse
+from lab_auto.api.paths import default_devices_config_path
 from lab_auto.api.task_queue import task_queue
 from lab_auto.config import load_devices_config
 from lab_auto.devices.factory import DeviceFactory
@@ -26,17 +25,17 @@ _HARDWARE_CALL_TIMEOUT_S = 15
 
 async def _run_in_thread(fn):
     """Run a blocking hardware call off the event loop, with a bounded wait."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await asyncio.wait_for(loop.run_in_executor(None, fn), timeout=_HARDWARE_CALL_TIMEOUT_S)
 
 
 @router.get("/status", response_model=DeviceStatusResponse)
-async def get_device_status(devices_config: str = "configs/devices.yaml"):
+async def get_device_status():
     """Get status of all devices."""
     if task_queue.is_hardware_busy():
         raise HTTPException(status_code=409, detail="任务正在使用硬件，无法查询设备状态")
     try:
-        config = load_devices_config(Path(devices_config))
+        config = load_devices_config(default_devices_config_path())
 
         def _run():
             factory = DeviceFactory()
@@ -54,12 +53,12 @@ async def get_device_status(devices_config: str = "configs/devices.yaml"):
 
 
 @router.post("/scan")
-async def scan_devices(devices_config: str = "configs/devices.yaml"):
+async def scan_devices():
     """Scan for available devices."""
     if task_queue.is_hardware_busy():
         raise HTTPException(status_code=409, detail="任务正在使用硬件，无法执行设备扫描")
     try:
-        config = load_devices_config(Path(devices_config))
+        config = load_devices_config(default_devices_config_path())
 
         def _run():
             factory = DeviceFactory()
@@ -76,7 +75,7 @@ async def scan_devices(devices_config: str = "configs/devices.yaml"):
 
 
 @router.get("/light/status", response_model=LightStatusResponse)
-async def get_light_status(devices_config: str = "configs/devices.yaml"):
+async def get_light_status():
     """Get light source status.
 
     A ``pwm_modbus`` light is queried with a side-effect-free register
@@ -87,7 +86,7 @@ async def get_light_status(devices_config: str = "configs/devices.yaml"):
     workflow may already hold.
     """
     try:
-        config = load_devices_config(Path(devices_config))
+        config = load_devices_config(default_devices_config_path())
     except (ConfigError, DeviceError) as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -143,7 +142,7 @@ async def get_light_status(devices_config: str = "configs/devices.yaml"):
 
 
 @router.post("/light/off")
-async def turn_light_off(devices_config: str = "configs/devices.yaml"):
+async def turn_light_off():
     """Force the light source off (all channels, read-back confirmed).
 
     Unlike the other endpoints in this router, a busy hardware executor does
@@ -154,8 +153,25 @@ async def turn_light_off(devices_config: str = "configs/devices.yaml"):
     off afterwards; the response says plainly whether a cancellation happened
     first.
     """
+    cancelled_jobs: list[str] = []
+    if task_queue.is_hardware_busy():
+        cancelled_jobs = await task_queue.cancel_all()
+        try:
+            if await _run_in_thread(task_queue.force_active_light_off):
+                return {
+                    "status": "off",
+                    "message": f"Cancelled {len(cancelled_jobs)} running job(s), then turned light off successfully",
+                    "cancelled_jobs": cancelled_jobs,
+                    "hardware_state": None,
+                }
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=504, detail="Timed out turning off active light")
+        except (ConfigError, DeviceError) as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
     try:
-        config = load_devices_config(Path(devices_config))
+        config_path = task_queue.safety_devices_path() or default_devices_config_path()
+        config = load_devices_config(config_path)
     except (ConfigError, DeviceError) as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -164,10 +180,6 @@ async def turn_light_off(devices_config: str = "configs/devices.yaml"):
             "status": "manual",
             "message": "Light is configured for manual control. Please turn off manually.",
         }
-
-    cancelled_jobs: list[str] = []
-    if task_queue.is_hardware_busy():
-        cancelled_jobs = task_queue.cancel_all()
 
     def _turn_off():
         factory = DeviceFactory()

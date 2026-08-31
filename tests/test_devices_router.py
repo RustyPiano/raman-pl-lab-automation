@@ -59,17 +59,24 @@ def _write(tmp_path, light):
 class FakeQueue:
     """Stand-in for the task_queue singleton: controllable busy flag."""
 
-    def __init__(self, *, busy=False, cancelled=None):
+    def __init__(self, *, busy=False, cancelled=None, active_light=False):
         self._busy = busy
         self._cancelled = cancelled if cancelled is not None else ["job-1"]
+        self._active_light = active_light
         self.cancel_all_called = False
 
     def is_hardware_busy(self):
         return self._busy
 
-    def cancel_all(self):
+    async def cancel_all(self):
         self.cancel_all_called = True
         return self._cancelled
+
+    def safety_devices_path(self):
+        return None
+
+    def force_active_light_off(self):
+        return self._active_light
 
 
 class FakeLight:
@@ -137,8 +144,9 @@ def test_light_status_idle_reads_without_writing_channels(app_client, tmp_path, 
     create_light_calls = []
     monkeypatch.setattr(devices, "DeviceFactory", _fake_factory_class(light, create_light_calls))
     monkeypatch.setattr(devices, "task_queue", FakeQueue(busy=False))
+    monkeypatch.setenv("LAB_AUTO_DEVICES_CONFIG", config_path)
 
-    response = app_client.get("/api/devices/light/status", params={"devices_config": config_path})
+    response = app_client.get("/api/devices/light/status")
 
     assert response.status_code == 200
     body = response.json()
@@ -154,8 +162,9 @@ def test_light_status_idle_reads_without_writing_channels(app_client, tmp_path, 
 def test_light_status_busy_returns_409(app_client, tmp_path, monkeypatch):
     config_path = _write(tmp_path, PWM_LIGHT)
     monkeypatch.setattr(devices, "task_queue", FakeQueue(busy=True))
+    monkeypatch.setenv("LAB_AUTO_DEVICES_CONFIG", config_path)
 
-    response = app_client.get("/api/devices/light/status", params={"devices_config": config_path})
+    response = app_client.get("/api/devices/light/status")
 
     assert response.status_code == 409
 
@@ -165,8 +174,9 @@ def test_light_status_manual_reports_software_state_even_if_busy(app_client, tmp
     # Even a "busy" queue must not block a manual light's status: there is no
     # hardware for this endpoint to race against.
     monkeypatch.setattr(devices, "task_queue", FakeQueue(busy=True))
+    monkeypatch.setenv("LAB_AUTO_DEVICES_CONFIG", config_path)
 
-    response = app_client.get("/api/devices/light/status", params={"devices_config": config_path})
+    response = app_client.get("/api/devices/light/status")
 
     assert response.status_code == 200
     body = response.json()
@@ -183,8 +193,9 @@ def test_light_off_idle_calls_safety_reset(app_client, tmp_path, monkeypatch):
     monkeypatch.setattr(devices, "DeviceFactory", _fake_factory_class(light, create_light_calls))
     queue = FakeQueue(busy=False)
     monkeypatch.setattr(devices, "task_queue", queue)
+    monkeypatch.setenv("LAB_AUTO_DEVICES_CONFIG", config_path)
 
-    response = app_client.post("/api/devices/light/off", params={"devices_config": config_path})
+    response = app_client.post("/api/devices/light/off")
 
     assert response.status_code == 200
     body = response.json()
@@ -203,8 +214,9 @@ def test_light_off_busy_cancels_running_jobs_first(app_client, tmp_path, monkeyp
     monkeypatch.setattr(devices, "DeviceFactory", _fake_factory_class(light, create_light_calls))
     queue = FakeQueue(busy=True, cancelled=["job-a", "job-b"])
     monkeypatch.setattr(devices, "task_queue", queue)
+    monkeypatch.setenv("LAB_AUTO_DEVICES_CONFIG", config_path)
 
-    response = app_client.post("/api/devices/light/off", params={"devices_config": config_path})
+    response = app_client.post("/api/devices/light/off")
 
     assert response.status_code == 200
     body = response.json()
@@ -214,10 +226,23 @@ def test_light_off_busy_cancels_running_jobs_first(app_client, tmp_path, monkeyp
     assert ("safety_reset",) in light.calls
 
 
-def test_light_off_manual_returns_manual_status(app_client, tmp_path):
-    config_path = _write(tmp_path, BASE["light"])
+def test_light_off_busy_uses_active_handle_even_if_config_disappeared(app_client, tmp_path, monkeypatch):
+    queue = FakeQueue(busy=True, cancelled=["job-a"], active_light=True)
+    monkeypatch.setattr(devices, "task_queue", queue)
+    monkeypatch.setenv("LAB_AUTO_DEVICES_CONFIG", str(tmp_path / "missing.yaml"))
 
-    response = app_client.post("/api/devices/light/off", params={"devices_config": config_path})
+    response = app_client.post("/api/devices/light/off")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "off"
+    assert response.json()["cancelled_jobs"] == ["job-a"]
+
+
+def test_light_off_manual_returns_manual_status(app_client, tmp_path, monkeypatch):
+    config_path = _write(tmp_path, BASE["light"])
+    monkeypatch.setenv("LAB_AUTO_DEVICES_CONFIG", config_path)
+
+    response = app_client.post("/api/devices/light/off")
 
     assert response.status_code == 200
     assert response.json()["status"] == "manual"
@@ -229,8 +254,9 @@ def test_light_off_surfaces_safety_reset_failure_as_400(app_client, tmp_path, mo
     create_light_calls = []
     monkeypatch.setattr(devices, "DeviceFactory", _fake_factory_class(light, create_light_calls))
     monkeypatch.setattr(devices, "task_queue", FakeQueue(busy=False))
+    monkeypatch.setenv("LAB_AUTO_DEVICES_CONFIG", config_path)
 
-    response = app_client.post("/api/devices/light/off", params={"devices_config": config_path})
+    response = app_client.post("/api/devices/light/off")
 
     assert response.status_code == 400
     assert "channel 2" in response.json()["detail"]
@@ -258,8 +284,9 @@ def test_devices_status_idle_runs_and_returns_scan_result(app_client, tmp_path, 
     config_path = _write(tmp_path, BASE["light"])
     monkeypatch.setattr(devices, "task_queue", FakeQueue(busy=False))
     monkeypatch.setattr(devices, "DeviceFactory", _fake_factory_class(FakeLight(), []))
+    monkeypatch.setenv("LAB_AUTO_DEVICES_CONFIG", config_path)
 
-    response = app_client.get("/api/devices/status", params={"devices_config": config_path})
+    response = app_client.get("/api/devices/status")
 
     assert response.status_code == 200
     body = response.json()
@@ -271,8 +298,9 @@ def test_devices_scan_idle_runs_and_returns_scan_result(app_client, tmp_path, mo
     config_path = _write(tmp_path, BASE["light"])
     monkeypatch.setattr(devices, "task_queue", FakeQueue(busy=False))
     monkeypatch.setattr(devices, "DeviceFactory", _fake_factory_class(FakeLight(), []))
+    monkeypatch.setenv("LAB_AUTO_DEVICES_CONFIG", config_path)
 
-    response = app_client.post("/api/devices/scan", params={"devices_config": config_path})
+    response = app_client.post("/api/devices/scan")
 
     assert response.status_code == 200
     assert response.json()["fake"] == "scan-result"

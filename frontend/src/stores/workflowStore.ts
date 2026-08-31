@@ -1,6 +1,12 @@
 import { create } from 'zustand';
 import apiClient, { getErrorMessage } from '@/api/client';
-import type { ApiJobStatus, JobStatus, ProgressUpdate } from '@/api/client';
+import type {
+  ApiJobStatus,
+  JobStatus,
+  ProgressUpdate,
+  RunMode,
+  SinglePointOverrides,
+} from '@/api/client';
 
 /**
  * Construct WebSocket URL with environment variable support
@@ -27,12 +33,13 @@ interface WorkflowState {
   // Actions
   startSinglePoint: (
     configPath: string,
-    mode: 'dry_run' | 'simulated' | 'real',
-    confirmReal?: boolean
+    mode: RunMode,
+    confirmReal?: boolean,
+    overrides?: SinglePointOverrides,
   ) => Promise<string>;
   connectWebSocket: (jobId: string) => void;
   disconnectWebSocket: () => void;
-  updateProgress: (update: ProgressUpdate) => void;
+  updateProgress: (update: ProgressUpdate, jobId: string) => void;
   stopJob: (jobId: string) => Promise<void>;
   fetchJobs: () => Promise<void>;
   addLog: (message: string) => void;
@@ -45,12 +52,13 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   wsConnection: null,
   logs: [],
 
-  startSinglePoint: async (configPath, mode, confirmReal = false) => {
+  startSinglePoint: async (configPath, mode, confirmReal = false, overrides = {}) => {
     try {
       const response = await apiClient.startSinglePoint({
         config_path: configPath,
         mode,
         confirm_real: confirmReal,
+        ...overrides,
       });
 
       const jobId = response.data.id;
@@ -71,7 +79,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
 
     // Close existing connection
     if (wsConnection) {
-      wsConnection.close();
+      wsConnection.close(1000, 'Replaced by a newer job stream');
     }
 
     const wsUrl = getWebSocketUrl(jobId);
@@ -79,6 +87,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
     const ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {
+      if (get().wsConnection !== ws) return;
       console.log('WebSocket connected');
       get().addLog('🔗 Connected to job stream');
     };
@@ -86,34 +95,40 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
     ws.onmessage = (event) => {
       try {
         const update: ProgressUpdate = JSON.parse(event.data);
-        get().updateProgress(update);
+        get().updateProgress(update, jobId);
       } catch (error) {
         console.error('Failed to parse WebSocket message:', error);
       }
     };
 
     ws.onerror = (error) => {
+      if (get().wsConnection !== ws) return;
       console.error('WebSocket error:', error);
       get().addLog('❌ Connection error');
     };
 
     ws.onclose = (event) => {
+      if (get().wsConnection !== ws) return;
       console.log('WebSocket closed', event.code, event.reason);
+
+      set({ wsConnection: null });
 
       if (event.code !== 1000 && event.code !== 1001) {
         // Abnormal closure, attempt reconnect after 3 seconds
         get().addLog('⚠️ Connection lost, reconnecting...');
         setTimeout(() => {
           const currentJob = get().currentJob;
-          if (currentJob && (currentJob.status === 'running' || currentJob.status === 'stopping' || currentJob.status === 'pending')) {
+          if (
+            currentJob?.id === jobId &&
+            get().wsConnection === null &&
+            (currentJob.status === 'running' || currentJob.status === 'stopping' || currentJob.status === 'pending')
+          ) {
             get().connectWebSocket(jobId);
           }
         }, 3000);
       } else {
         get().addLog('🔌 Disconnected');
       }
-
-      set({ wsConnection: null });
     };
 
     set({ wsConnection: ws });
@@ -127,8 +142,10 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
     }
   },
 
-  updateProgress: (update: ProgressUpdate) => {
+  updateProgress: (update: ProgressUpdate, jobId: string) => {
     if (update.type === 'pong') return;
+
+    if (get().currentJob?.id !== jobId) return;
 
     set((state) => ({
       currentJob: state.currentJob ? {
@@ -156,23 +173,23 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
     // Disconnect WebSocket if job is finished
     if (status === 'completed' || status === 'failed' || status === 'stopped') {
       setTimeout(() => {
-        get().disconnectWebSocket();
+        if (get().currentJob?.id === jobId) get().disconnectWebSocket();
       }, 1000);
     }
   },
 
   stopJob: async (jobId: string) => {
     try {
-      await apiClient.stopJob(jobId);
+      const response = await apiClient.stopJob(jobId);
       get().addLog('⏹️ 停止请求已发送，等待硬件安全收尾（激光关闭确认后才会真正停止）…');
 
       // Honest semantics: mark as "stopping" and keep the WebSocket open so the
       // backend's real terminal status (stopped/completed/failed) reaches the UI.
       set((state) => ({
-        currentJob: state.currentJob ? {
+        currentJob: state.currentJob?.id === jobId ? {
           ...state.currentJob,
-          status: 'stopping',
-        } : null,
+          status: response.data.status,
+        } : state.currentJob,
       }));
     } catch (error) {
       const message = getErrorMessage(error);

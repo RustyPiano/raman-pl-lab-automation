@@ -1,3 +1,6 @@
+import { useState } from 'react';
+import { TriangleAlert } from 'lucide-react';
+
 import {
   AlertDialog,
   AlertDialogAction,
@@ -8,6 +11,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Field, FieldGroup, FieldLabel } from '@/components/ui/field';
 
 interface SafetyConfirmProps {
   open: boolean;
@@ -15,42 +20,72 @@ interface SafetyConfirmProps {
   onConfirm: () => void;
 }
 
+const safetyItems = [
+  ['sample', '样品已正确放置'],
+  ['eyewear', '激光防护眼镜已佩戴'],
+  ['area', '实验区域无无关人员'],
+  ['path', '激光路径畅通无阻'],
+] as const;
+
+type SafetyCheck = (typeof safetyItems)[number][0];
+const unchecked = (): Record<SafetyCheck, boolean> => ({
+  sample: false,
+  eyewear: false,
+  area: false,
+  path: false,
+});
+
 export function SafetyConfirm({ open, onOpenChange, onConfirm }: SafetyConfirmProps) {
+  const [checks, setChecks] = useState(unchecked);
+  const allConfirmed = Object.values(checks).every(Boolean);
+
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (!nextOpen) setChecks(unchecked());
+    onOpenChange(nextOpen);
+  };
+
+  const handleConfirm = () => {
+    if (!allConfirmed) return;
+    onConfirm();
+    setChecks(unchecked());
+  };
+
   return (
-    <AlertDialog open={open} onOpenChange={onOpenChange}>
+    <AlertDialog open={open} onOpenChange={handleOpenChange}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle className="flex items-center gap-2 text-amber-600">
-            <span className="text-2xl">⚠️</span>
+          <AlertDialogTitle className="flex items-center gap-2 text-destructive">
+            <TriangleAlert aria-hidden="true" />
             激光安全确认
           </AlertDialogTitle>
-          <AlertDialogDescription className="text-left space-y-3 pt-2">
-            <p className="text-base">即将开启激光，请确认以下事项：</p>
-            <div className="space-y-2 pl-2">
-              <div className="flex items-start gap-2">
-                <span>☐</span>
-                <span>样品已正确放置</span>
-              </div>
-              <div className="flex items-start gap-2">
-                <span>☐</span>
-                <span>激光防护眼镜已佩戴</span>
-              </div>
-              <div className="flex items-start gap-2">
-                <span>☐</span>
-                <span>实验区域无无关人员</span>
-              </div>
-              <div className="flex items-start gap-2">
-                <span>☐</span>
-                <span>激光路径畅通无阻</span>
-              </div>
-            </div>
+          <AlertDialogDescription>
+            真机任务将开启激光。逐项确认后才能继续；软件急停不能替代物理急停开关。
           </AlertDialogDescription>
         </AlertDialogHeader>
+
+        <FieldGroup data-slot="checkbox-group" className="gap-3">
+          {safetyItems.map(([id, label]) => (
+            <Field key={id} orientation="horizontal">
+              <Checkbox
+                id={`safety-${id}`}
+                checked={checks[id]}
+                onCheckedChange={(checked) =>
+                  setChecks((current) => ({ ...current, [id]: checked === true }))
+                }
+              />
+              <FieldLabel htmlFor={`safety-${id}`} className="cursor-pointer">
+                {label}
+              </FieldLabel>
+            </Field>
+          ))}
+        </FieldGroup>
+
         <AlertDialogFooter>
           <AlertDialogCancel>取消</AlertDialogCancel>
           <AlertDialogAction
-            onClick={onConfirm}
-            className="bg-red-600 hover:bg-red-700 focus:ring-red-600"
+            variant="destructive"
+            disabled={!allConfirmed}
+            onClick={handleConfirm}
           >
             确认开启
           </AlertDialogAction>

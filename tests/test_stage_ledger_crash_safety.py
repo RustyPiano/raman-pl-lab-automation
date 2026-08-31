@@ -10,7 +10,10 @@ from lab_auto.devices.waynelabs_stage import AxisState, PositionLedger, Waynelab
 from lab_auto.errors import ConfigError, SafetyError
 
 
-def make_config(tmp_path, *, home_direction=None):
+_DEFAULT_HOME = {"x": "negative", "y": "negative", "z": "positive"}
+
+
+def make_config(tmp_path, *, home_direction=_DEFAULT_HOME):
     return StageConfig(
         type="waynelabs_linear",
         port="COM5",
@@ -183,11 +186,14 @@ light: {{type: manual, manual_light_control: true}}
 
 def test_config_parses_home_direction(tmp_path):
     path = tmp_path / "devices.yaml"
-    path.write_text(_devices_yaml(home_direction_line="  home_direction: positive"), encoding="utf-8")
+    path.write_text(
+        _devices_yaml(home_direction_line="  home_direction: {x: positive, y: negative, z: positive}"),
+        encoding="utf-8",
+    )
 
     config = load_devices_config(path)
 
-    assert config.stage.home_direction == "positive"
+    assert config.stage.home_direction == {"x": "positive", "y": "negative", "z": "positive"}
 
 
 def test_config_home_direction_optional_defaults_none(tmp_path):
@@ -209,8 +215,19 @@ def test_config_rejects_invalid_home_direction(tmp_path):
 
 # --- home-direction runtime guard -------------------------------------
 
+def test_real_home_requires_configured_direction(tmp_path):
+    cfg = make_config(tmp_path, home_direction=None)
+    transport = FakeTransport(["?t"])
+    stage = WaynelabsStage(cfg, transport=transport, dry_run=False, ledger=PositionLedger())
+
+    with pytest.raises(SafetyError, match="no configured safe home direction"):
+        stage.home(axis="x", direction="negative", speed=8)
+
+    assert transport.writes == []
+
+
 def test_home_rejects_direction_that_disagrees_with_config(tmp_path):
-    cfg = make_config(tmp_path, home_direction="negative")
+    cfg = make_config(tmp_path, home_direction={"x": "negative", "y": "negative", "z": "positive"})
     transport = FakeTransport(["?t"])
     stage = WaynelabsStage(cfg, transport=transport, dry_run=False, ledger=PositionLedger())
 
@@ -222,7 +239,7 @@ def test_home_rejects_direction_that_disagrees_with_config(tmp_path):
 
 
 def test_home_allows_matching_configured_direction(tmp_path):
-    cfg = make_config(tmp_path, home_direction="negative")
+    cfg = make_config(tmp_path, home_direction={"x": "negative", "y": "negative", "z": "positive"})
     stage = WaynelabsStage(cfg, transport=FakeTransport(["?t"]), dry_run=False, ledger=PositionLedger())
 
     stage.home(axis="x", direction="negative", speed=8)

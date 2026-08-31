@@ -10,8 +10,29 @@ class SinglePointRequest(BaseModel):
     config_path: str = Field(..., description="Path to workflow config YAML")
     devices_path: str | None = Field(None, description="Override devices config path")
     sample_id: str | None = Field(None, description="Override sample ID")
+    operator: str | None = Field(None, description="Override operator name")
+    subtract_background: bool | None = Field(None, description="Override background subtraction")
     mode: Literal["dry_run", "simulated", "real"] = Field("dry_run", description="Execution mode")
     confirm_real: bool = Field(False, description="Explicit confirmation for real hardware mode")
+
+
+class TrayPreviewRequest(BaseModel):
+    """Request a side-effect-free tray scan plan."""
+    config_path: str = Field(..., description="Path to tray-scan config YAML")
+
+
+class TrayPreviewResponse(BaseModel):
+    """Validated tray geometry and dry-run actions; never touches hardware."""
+    config_path: str
+    sample_id: str
+    operator: str
+    layout: dict[str, Any]
+    pattern: dict[str, Any]
+    wafers: list[dict[str, Any]]
+    actions: list[str]
+    summary: dict[str, int]
+    real_available: bool
+    real_unavailable_reason: str
 
 
 class JobProgress(BaseModel):
@@ -71,6 +92,27 @@ class ConfigValidationResponse(BaseModel):
     """Configuration validation result."""
     valid: bool
     errors: list[str] | None = None
+
+
+class HistoryRecord(BaseModel):
+    """One persisted single-point measurement."""
+    id: str
+    source: Literal["measurement"] = "measurement"
+    type: Literal["single_point"] = "single_point"
+    status: Literal["completed"] = "completed"
+    created_at: str
+    completed_at: str
+    sample_id: str | None = None
+    operator: str | None = None
+    mode: str
+    warnings_count: int
+    files: list[str]
+
+
+class HistoryDetail(BaseModel):
+    """Persisted record metadata plus chart-ready spectrum data."""
+    record: HistoryRecord
+    result: dict[str, Any]
 
 
 class HealthResponse(BaseModel):

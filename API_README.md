@@ -7,10 +7,7 @@
 ```bash
 # 激活虚拟环境
 source .venv/bin/activate
-
-# 依赖已安装在虚拟环境中
-# 如需重新安装：
-pip install fastapi uvicorn websockets python-multipart pydantic pyyaml
+pip install -e ".[api]"
 ```
 
 ### 2. 启动服务器
@@ -22,10 +19,10 @@ pip install fastapi uvicorn websockets python-multipart pydantic pyyaml
 
 **方法 2：直接使用 uvicorn**
 ```bash
-cd /Users/rustypiano/Documents/研究生/自主实验平台
+cd /path/to/Raman自动化
 source .venv/bin/activate
 export PYTHONPATH=src
-uvicorn lab_auto.api.main:app --host 127.0.0.1 --port 8008 --reload
+uvicorn lab_auto.api.main:app --host 127.0.0.1 --port 8008
 ```
 
 ### 3. 访问 API
@@ -54,18 +51,25 @@ uvicorn lab_auto.api.main:app --host 127.0.0.1 --port 8008 --reload
 
 ### 配置管理 (`/api/configs`)
 
-- `GET /api/configs` - 列出所有配置文件
+- `GET /api/configs?config_type=all|single_point|tray` - 按类型列出配置文件；`tray` 只返回通过完整校验的配置
 - `GET /api/configs/{name}` - 读取指定配置文件
 - `POST /api/configs/validate` - 验证配置文件
 
 ### 工作流执行 (`/api/workflow`)
 
 - `POST /api/workflow/single-point` - 启动单点 Raman 测量
+- `POST /api/workflow/tray/preview` - 生成无硬件副作用的托盘 dry-run 计划（几何、动作和统计）
 - `GET /api/workflow/jobs` - 列出所有任务
 - `GET /api/workflow/jobs/{job_id}` - 获取任务详情
 - `POST /api/workflow/jobs/{job_id}/stop` - 停止任务（协作式取消：pending 立即停止；
   running 进入 `stopping` 状态，工作流在下一个检查点安全收尾（含强制关激光）后才变为 `stopped`）
 - `WS /api/workflow/ws/jobs/{job_id}` - WebSocket 实时进度推送
+
+### 历史结果 (`/api/history`)
+
+- `GET /api/history` - 列出 `output/measurements` 中有效的持久化单点结果
+- `GET /api/history/{record_id}` - 读取元数据与可绘图光谱
+- `GET /api/history/{record_id}/files/{filename}` - 下载该结果的 CSV、JSON 或运行日志
 
 ## 使用示例
 
@@ -75,7 +79,7 @@ uvicorn lab_auto.api.main:app --host 127.0.0.1 --port 8008 --reload
 curl -X POST http://127.0.0.1:8008/api/workflow/single-point \
   -H "Content-Type: application/json" \
   -d '{
-    "config_path": "configs/single_point.example.yaml",
+    "config_path": "single_point.example.yaml",
     "mode": "simulated"
   }'
 ```
@@ -86,7 +90,7 @@ curl -X POST http://127.0.0.1:8008/api/workflow/single-point \
 curl -X POST http://127.0.0.1:8008/api/workflow/single-point \
   -H "Content-Type: application/json" \
   -d '{
-    "config_path": "configs/single_point.example.yaml",
+    "config_path": "single_point.example.yaml",
     "mode": "real",
     "confirm_real": true
   }'
@@ -141,8 +145,7 @@ setInterval(() => ws.send('ping'), 30000);
 
 ```bash
 curl -X POST http://127.0.0.1:8008/api/devices/scan \
-  -H "Content-Type: application/json" \
-  -d '{"devices_config": "configs/devices.yaml"}'
+  -H "Content-Type: application/json"
 ```
 
 ### 5. 列出配置文件
@@ -225,7 +228,7 @@ logging.basicConfig(level=logging.DEBUG)  # 更详细的日志
 lsof -ti:8008
 
 # 终止进程
-kill -9 $(lsof -ti:8008)
+kill $(lsof -ti:8008)
 ```
 
 ### 导入错误
@@ -233,7 +236,7 @@ kill -9 $(lsof -ti:8008)
 确保 `PYTHONPATH` 包含 `src` 目录：
 
 ```bash
-export PYTHONPATH=/Users/rustypiano/Documents/研究生/自主实验平台/src
+export PYTHONPATH=/path/to/Raman自动化/src
 ```
 
 ### WebSocket 连接失败

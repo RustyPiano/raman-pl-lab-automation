@@ -1,7 +1,12 @@
 @echo off
 REM Startup script for React frontend on Windows
 
-cd /d "%~dp0\frontend"
+cd /d "%~dp0..\frontend"
+
+if not exist node_modules (
+    echo Installing dependencies...
+    call npm ci
+)
 
 echo ========================================
 echo  Raman/PL Automation Platform - Frontend

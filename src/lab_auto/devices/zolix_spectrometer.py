@@ -1,3 +1,5 @@
+import math
+
 from lab_auto.errors import ConfigError, DeviceError
 from lab_auto.devices.optics_validation import validate_zolix_optics, validate_zolix_pixels_to_waves_args
 
@@ -44,22 +46,40 @@ class ZolixSpectrometer:
         return self.set_entrance_port(entrance_port) and self.set_exit_port(exit_port)
 
     def set_entrance_port(self, port: str) -> bool:
-        return require_ok("set_entrance_port", self.raw.set_entrance_port(self.device_id, direct_to_front_bool(port)))
+        expected = direct_to_front_bool(port)
+        require_ok("set_entrance_port", self.raw.set_entrance_port(self.device_id, expected))
+        if self.raw.get_entrance_port(self.device_id) != expected:
+            raise DeviceError("Zolix entrance-port readback mismatch")
+        return True
 
     def set_exit_port(self, port: str) -> bool:
-        return require_ok("set_exit_port", self.raw.set_exit_port(self.device_id, direct_to_front_bool(port)))
+        expected = direct_to_front_bool(port)
+        require_ok("set_exit_port", self.raw.set_exit_port(self.device_id, expected))
+        if self.raw.get_exit_port(self.device_id) != expected:
+            raise DeviceError("Zolix exit-port readback mismatch")
+        return True
 
     def set_grating(self, grating: int) -> bool:
         validate_zolix_optics(grating=grating)
-        return require_ok("set_grating", self.raw.set_grating(self.device_id, grating))
+        require_ok("set_grating", self.raw.set_grating(self.device_id, grating))
+        if self.raw.get_grating(self.device_id) != grating:
+            raise DeviceError("Zolix grating readback mismatch")
+        return True
 
     def move_to_wavelength_nm(self, wavelength_nm: float) -> bool:
         validate_zolix_optics(wavelength_nm=wavelength_nm)
-        return require_ok("move_to_wavelength_nm", self.raw.move_to_wavelength_nm(self.device_id, wavelength_nm))
+        require_ok("move_to_wavelength_nm", self.raw.move_to_wavelength_nm(self.device_id, wavelength_nm))
+        actual = self.raw.get_current_wavelength_nm(self.device_id)
+        if not math.isclose(actual, wavelength_nm, rel_tol=1e-6, abs_tol=1e-3):
+            raise DeviceError(f"Zolix wavelength readback mismatch (read {actual}, need {wavelength_nm})")
+        return True
 
     def set_slit_width_um(self, width_um: int) -> bool:
         validate_zolix_optics(slit_um=width_um)
-        return require_ok("set_slit_width_um", self.raw.set_slit_width_um(self.device_id, width_um))
+        require_ok("set_slit_width_um", self.raw.set_slit_width_um(self.device_id, width_um))
+        if self.raw.get_slit_width_um(self.device_id) != width_um:
+            raise DeviceError("Zolix slit-width readback mismatch")
+        return True
 
     def pixels_to_waves(
         self,

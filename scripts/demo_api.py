@@ -3,9 +3,26 @@
 import json
 import sys
 import time
-import requests
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 BASE_URL = "http://127.0.0.1:8008"
+
+
+def request_json(path, payload=None):
+    data = json.dumps(payload).encode() if payload is not None else None
+    request = Request(
+        f"{BASE_URL}{path}",
+        data=data,
+        headers={"Content-Type": "application/json"} if data else {},
+        method="POST" if data else "GET",
+    )
+    try:
+        response = urlopen(request, timeout=10)
+    except HTTPError as exc:
+        response = exc
+    with response:
+        return response.getcode(), json.loads(response.read())
 
 
 def main():
@@ -16,14 +33,14 @@ def main():
     # 1. Health check
     print("\n1. Health Check")
     print("-" * 70)
-    response = requests.get(f"{BASE_URL}/health")
-    print(f"✓ Server is healthy: {response.json()}")
+    _, body = request_json("/health")
+    print(f"✓ Server is healthy: {body}")
 
     # 2. List available configs
     print("\n2. List Available Configurations")
     print("-" * 70)
-    response = requests.get(f"{BASE_URL}/api/configs?config_dir=configs")
-    configs = response.json()['configs']
+    _, body = request_json("/api/configs")
+    configs = body['configs']
     print(f"Found {len(configs)} configuration files:")
     for config in configs[:5]:
         print(f"  • {config}")
@@ -32,13 +49,12 @@ def main():
     print("\n3. Submit Single-Point Measurement (Simulated Mode)")
     print("-" * 70)
     payload = {
-        "config_path": "configs/single_point.example.yaml",
+        "config_path": "single_point.example.yaml",
         "mode": "simulated"
     }
     print(f"Request: {json.dumps(payload, indent=2)}")
 
-    response = requests.post(f"{BASE_URL}/api/workflow/single-point", json=payload)
-    job = response.json()
+    _, job = request_json("/api/workflow/single-point", payload)
     job_id = job['id']
     print(f"✓ Job created: {job_id}")
     print(f"  Status: {job['status']}")
@@ -47,8 +63,7 @@ def main():
     print("\n4. Poll Job Status")
     print("-" * 70)
     for i in range(10):
-        response = requests.get(f"{BASE_URL}/api/workflow/jobs/{job_id}")
-        job = response.json()
+        _, job = request_json(f"/api/workflow/jobs/{job_id}")
         status = job['status']
         progress = job.get('progress', {})
         percentage = progress.get('percentage', 0)
@@ -68,8 +83,7 @@ def main():
     # 5. Final result
     print("\n5. Final Result")
     print("-" * 70)
-    response = requests.get(f"{BASE_URL}/api/workflow/jobs/{job_id}")
-    job = response.json()
+    _, job = request_json(f"/api/workflow/jobs/{job_id}")
 
     if job['status'] == 'completed':
         print("✓ Measurement completed successfully!")
@@ -95,10 +109,10 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except requests.exceptions.ConnectionError:
+    except URLError:
         print("\n❌ Error: Cannot connect to server")
         print("Start the server first:")
-        print("  ./start_api.sh")
+        print("  ./scripts/start_api.sh")
         sys.exit(1)
     except Exception as e:
         print(f"\n❌ Error: {e}")

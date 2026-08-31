@@ -17,6 +17,7 @@ def config(tmp_path):
         soft_limits_um={"x": [-5000, 5000], "y": [-5000, 5000], "z": [-1000, 1000]},
         state_file=tmp_path / "stage_position.json",
         max_unknown_move_um=100,
+        home_direction={"x": "negative", "y": "negative", "z": "positive"},
     )
 
 

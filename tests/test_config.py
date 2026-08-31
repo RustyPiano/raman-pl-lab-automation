@@ -2,6 +2,7 @@ from pathlib import Path
 import tomllib
 
 import pytest
+import yaml
 
 from lab_auto.config import load_devices_config, load_workflow_and_devices, load_workflow_config
 from lab_auto.errors import ConfigError
@@ -120,6 +121,16 @@ light: {type: manual, manual_light_control: true}
         load_devices_config(path)
 
 
+def test_load_devices_config_rejects_soft_limits_outside_zero_origin(tmp_path):
+    data = yaml.safe_load(Path("configs/devices.example.yaml").read_text(encoding="utf-8"))
+    data["stage"]["soft_limits_um"]["x"] = [1, 5000]
+    path = tmp_path / "devices.yaml"
+    path.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ConfigError, match="origin 0"):
+        load_devices_config(path)
+
+
 def test_load_devices_config_rejects_non_positive_resolution(tmp_path: Path):
     path = tmp_path / "devices.yaml"
     path.write_text(
@@ -142,6 +153,35 @@ light: {type: manual, manual_light_control: true}
     )
 
     with pytest.raises(ConfigError, match="resolution_um"):
+        load_devices_config(path)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("baudrate", 0, "baudrate"),
+        ("default_speed", 10, "default_speed"),
+        ("max_unknown_move_um", -1, "max_unknown_move_um"),
+    ],
+)
+def test_load_devices_config_rejects_unsafe_stage_values(tmp_path, field, value, message):
+    data = yaml.safe_load(Path("configs/devices.example.yaml").read_text(encoding="utf-8"))
+    data["stage"][field] = value
+    path = tmp_path / "devices.yaml"
+    path.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ConfigError, match=message):
+        load_devices_config(path)
+
+
+def test_load_devices_config_rejects_unsupported_stage_axis(tmp_path):
+    data = yaml.safe_load(Path("configs/devices.example.yaml").read_text(encoding="utf-8"))
+    data["stage"]["resolution_um"]["rotary"] = 1
+    data["stage"]["soft_limits_um"]["rotary"] = [-1, 1]
+    path = tmp_path / "devices.yaml"
+    path.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ConfigError, match="unsupported axes"):
         load_devices_config(path)
 
 
@@ -220,6 +260,55 @@ output:
     assert config.optics.entrance_port == "side"
     assert config.optics.exit_port == "direct"
     assert config.acquisition.gain == "low"
+
+
+@pytest.mark.parametrize(
+    "sample",
+    [
+        {"id": None, "operator": "lab"},
+        {"id": " sample-001", "operator": "lab"},
+        {"id": "sample-001", "operator": "   "},
+    ],
+)
+def test_workflow_rejects_untraceable_sample_metadata(tmp_path, sample):
+    data = yaml.safe_load(Path("configs/single_point.example.yaml").read_text(encoding="utf-8"))
+    data["sample"] = sample
+    path = tmp_path / "single.yaml"
+    path.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ConfigError):
+        load_workflow_config(path)
+
+
+@pytest.mark.parametrize("sample_id", ["CON", "name.", "bad:name", "x" * 129])
+def test_workflow_config_rejects_nonportable_sample_id(tmp_path: Path, sample_id):
+    data = yaml.safe_load(Path("configs/single_point.example.yaml").read_text(encoding="utf-8"))
+    data["sample"]["id"] = sample_id
+    path = tmp_path / "single.yaml"
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="Windows-safe"):
+        load_workflow_config(path)
+
+
+def test_workflow_config_rejects_output_formats_it_does_not_implement(tmp_path: Path):
+    data = yaml.safe_load(Path("configs/single_point.example.yaml").read_text(encoding="utf-8"))
+    data["output"]["formats"] = ["csv"]
+    path = tmp_path / "single.yaml"
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="formats"):
+        load_workflow_config(path)
+
+
+def test_devices_config_rejects_partial_home_direction_map(tmp_path: Path):
+    data = yaml.safe_load(Path("configs/devices.example.yaml").read_text(encoding="utf-8"))
+    data["stage"]["home_direction"] = {"x": "negative", "y": "negative"}
+    path = tmp_path / "devices.yaml"
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="must match configured stage axes"):
+        load_devices_config(path)
 
 
 def test_load_workflow_config_rejects_non_finite_exposure(tmp_path: Path):

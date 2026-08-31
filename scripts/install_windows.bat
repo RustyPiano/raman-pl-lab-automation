@@ -1,6 +1,8 @@
 @echo off
 REM Windows installation script for Raman/PL Automation Platform
 
+cd /d "%~dp0.."
+
 echo ========================================
 echo  Raman/PL Platform - Windows Installation
 echo ========================================
@@ -23,7 +25,7 @@ echo [2/5] Checking Node.js installation...
 node --version >nul 2>&1
 if errorlevel 1 (
     echo ERROR: Node.js is not installed or not in PATH
-    echo Please install Node.js 18+ from https://nodejs.org/
+    echo Please install Node.js 20.19+ from https://nodejs.org/
     pause
     exit /b 1
 )
@@ -45,8 +47,7 @@ REM Install Python dependencies
 echo [4/5] Installing Python dependencies...
 call .venv\Scripts\activate.bat
 python -m pip install --upgrade pip
-pip install -e .
-pip install uvicorn fastapi pydantic pillow
+python -m pip install -e ".[api,recognition]"
 echo Python dependencies installed successfully
 echo.
 

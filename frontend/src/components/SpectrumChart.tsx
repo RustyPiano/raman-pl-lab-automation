@@ -1,133 +1,113 @@
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { useState } from 'react';
+import { TriangleAlert } from 'lucide-react';
+import {
+  CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
+
+import type { SpectrumResult } from '@/api/client';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 
 interface SpectrumChartProps {
-  result?: any;
+  result: SpectrumResult;
 }
 
 export function SpectrumChart({ result }: SpectrumChartProps) {
-  const [showCorrected, setShowCorrected] = useState(true);
-
-  if (!result || !result.spectrum) {
-    return null;
-  }
-
-  const { spectrum, wavelengths, metadata } = result;
-
-  // Prepare data for recharts
-  const chartData = wavelengths
-    ? wavelengths.map((wl: number, idx: number) => ({
-        wavelength: wl,
-        raw: spectrum.raw?.[idx] || 0,
-        corrected: spectrum.corrected?.[idx] || spectrum.raw?.[idx] || 0,
-      }))
-    : spectrum.raw?.map((value: number, idx: number) => ({
-        pixel: idx,
-        raw: value,
-        corrected: spectrum.corrected?.[idx] || value,
-      })) || [];
-
-  const xAxisKey = wavelengths ? 'wavelength' : 'pixel';
-  const xAxisLabel = wavelengths ? '波长 (nm)' : '像素索引';
+  const [series, setSeries] = useState<'raw' | 'corrected'>('corrected');
+  const correctedAvailable = result.spectrum.corrected !== null;
+  const activeSeries = series === 'corrected' && correctedAvailable ? 'corrected' : 'raw';
+  const values = activeSeries === 'corrected' ? result.spectrum.corrected! : result.spectrum.raw;
+  const xValues = result.x.length === values.length ? result.x : values.map((_, index) => index);
+  const chartData = xValues.map((x, index) => ({ x, intensity: values[index] ?? 0 }));
+  const wavelengthAxis = result.x_axis_type === 'wavelength_nm';
+  const outputLabel = result.output_directory.split(/[\\/]/).pop() ?? result.output_directory;
 
   return (
     <Card>
-      <CardHeader>
-        <div className="flex items-center justify-between">
+      <CardHeader className="flex-row items-center justify-between">
+        <div className="flex min-w-0 flex-col gap-1">
           <CardTitle>光谱数据</CardTitle>
-          <div className="flex gap-2">
-            <Button
-              variant={!showCorrected ? 'default' : 'outline'}
-              size="sm"
-              onClick={() => setShowCorrected(false)}
-            >
-              原始
-            </Button>
-            <Button
-              variant={showCorrected ? 'default' : 'outline'}
-              size="sm"
-              onClick={() => setShowCorrected(true)}
-            >
-              校正
-            </Button>
-          </div>
+          <CardDescription className="truncate">{outputLabel}</CardDescription>
         </div>
+        <ToggleGroup
+          type="single"
+          variant="outline"
+          size="sm"
+          value={activeSeries}
+          onValueChange={(value) => {
+            if (value === 'raw' || value === 'corrected') setSeries(value);
+          }}
+          aria-label="选择光谱序列"
+        >
+          <ToggleGroupItem value="raw" aria-label="显示原始光谱">原始</ToggleGroupItem>
+          {correctedAvailable && (
+            <ToggleGroupItem value="corrected" aria-label="显示校正光谱">校正</ToggleGroupItem>
+          )}
+        </ToggleGroup>
       </CardHeader>
       <CardContent>
-        <ResponsiveContainer width="100%" height={400}>
-          <LineChart data={chartData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis
-              dataKey={xAxisKey}
-              label={{ value: xAxisLabel, position: 'insideBottom', offset: -5 }}
-            />
-            <YAxis label={{ value: '强度', angle: -90, position: 'insideLeft' }} />
-            <Tooltip />
-            <Legend />
-            {!showCorrected && (
+        <div className="h-[300px] w-full sm:h-[420px]" role="img" aria-label="光谱折线图">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={chartData} margin={{ top: 5, right: 30, left: 20, bottom: 20 }}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis
+                dataKey="x"
+                label={{
+                  value: wavelengthAxis ? '波长 (nm)' : '像素索引',
+                  position: 'insideBottom',
+                  offset: -12,
+                }}
+              />
+              <YAxis label={{ value: '强度', angle: -90, position: 'insideLeft' }} />
+              <Tooltip />
+              <Legend />
               <Line
                 type="monotone"
-                dataKey="raw"
-                stroke="#3b82f6"
-                name="原始光谱"
+                dataKey="intensity"
+                stroke={activeSeries === 'corrected' ? 'hsl(var(--primary))' : 'hsl(var(--foreground))'}
+                name={activeSeries === 'corrected' ? '校正光谱' : '原始光谱'}
                 dot={false}
                 strokeWidth={2}
               />
-            )}
-            {showCorrected && (
-              <Line
-                type="monotone"
-                dataKey="corrected"
-                stroke="#10b981"
-                name="校正光谱"
-                dot={false}
-                strokeWidth={2}
-              />
-            )}
-          </LineChart>
-        </ResponsiveContainer>
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
 
-        {/* Metadata */}
-        {metadata && (
-          <div className="mt-4 text-sm text-muted-foreground space-y-1">
-            <div className="grid grid-cols-2 gap-2">
-              {metadata.sample_id && (
-                <div>
-                  <span className="font-medium">样品ID:</span> {metadata.sample_id}
-                </div>
-              )}
-              {metadata.operator && (
-                <div>
-                  <span className="font-medium">操作员:</span> {metadata.operator}
-                </div>
-              )}
-              {metadata.timestamp && (
-                <div>
-                  <span className="font-medium">时间:</span>{' '}
-                  {new Date(metadata.timestamp).toLocaleString('zh-CN')}
-                </div>
-              )}
-              {metadata.integration_time && (
-                <div>
-                  <span className="font-medium">积分时间:</span> {metadata.integration_time}ms
-                </div>
-              )}
-            </div>
-          </div>
-        )}
+        <dl className="mt-4 grid gap-2 text-sm text-muted-foreground sm:grid-cols-2">
+          {result.metadata.sample_id && (
+            <div><dt className="inline font-medium">样品 ID：</dt><dd className="inline">{result.metadata.sample_id}</dd></div>
+          )}
+          {result.metadata.operator && (
+            <div><dt className="inline font-medium">操作员：</dt><dd className="inline">{result.metadata.operator}</dd></div>
+          )}
+          {result.metadata.timestamp && (
+            <div><dt className="inline font-medium">时间：</dt><dd className="inline">{new Date(result.metadata.timestamp).toLocaleString('zh-CN')}</dd></div>
+          )}
+          {result.metadata.camera?.exposure_ms !== undefined && (
+            <div><dt className="inline font-medium">曝光时间：</dt><dd className="inline">{result.metadata.camera.exposure_ms} ms</dd></div>
+          )}
+        </dl>
 
-        {/* Warnings */}
-        {result.warnings && result.warnings.length > 0 && (
-          <div className="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-md">
-            <div className="font-medium text-amber-800 mb-1">⚠️ 警告</div>
-            <ul className="text-sm text-amber-700 space-y-1 list-disc list-inside">
-              {result.warnings.map((warning: string, idx: number) => (
-                <li key={idx}>{warning}</li>
+        {result.warnings.length > 0 && (
+          <Alert className="mt-4">
+            <TriangleAlert aria-hidden="true" />
+            <AlertTitle>采集警告</AlertTitle>
+            <AlertDescription>
+              <ul className="flex list-inside list-disc flex-col gap-1">
+              {result.warnings.map((warning, index) => (
+                <li key={`${warning}-${index}`}>{warning}</li>
               ))}
-            </ul>
-          </div>
+              </ul>
+            </AlertDescription>
+          </Alert>
         )}
       </CardContent>
     </Card>

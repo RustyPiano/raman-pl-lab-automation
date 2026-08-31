@@ -25,7 +25,7 @@ class StageConfig:
     soft_limits_um: dict[str, list[float]]
     state_file: Path
     max_unknown_move_um: float
-    home_direction: str | None = None
+    home_direction: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -177,11 +177,11 @@ class TrayScanConfig:
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
-    if not path.exists():
+    if not path.is_file():
         raise ConfigError(f"configuration file does not exist: {path}")
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (ValueError, yaml.YAMLError) as exc:
+    except (OSError, UnicodeError, ValueError, yaml.YAMLError) as exc:
         raise ConfigError(f"configuration YAML is invalid: {path}") from exc
     if not isinstance(data, dict):
         raise ConfigError(f"configuration root must be a mapping: {path}")
@@ -253,21 +253,34 @@ def _soft_limits_um(value: Any) -> dict[str, list[float]]:
         if not isinstance(axis_limits, (list, tuple)) or len(axis_limits) != 2:
             raise ConfigError(f"soft_limits_um.{axis} must contain two bounds")
         low, high = [_finite_float(item, field=f"soft_limits_um.{axis}") for item in axis_limits]
-        if low > high:
-            raise ConfigError(f"soft_limits_um.{axis} lower bound must be <= upper bound")
+        if low >= high:
+            raise ConfigError(f"soft_limits_um.{axis} lower bound must be < upper bound")
+        if not low <= 0 <= high:
+            raise ConfigError(f"soft_limits_um.{axis} must contain the homed/user-zero origin 0")
         limits[axis] = [low, high]
     return limits
 
 
-def _parse_home_direction(value: Any) -> str | None:
+def _parse_home_direction(value: Any) -> dict[str, str] | None:
     if value is None:
         return None
-    if value not in ("positive", "negative"):
-        raise ConfigError("stage home_direction must be 'positive', 'negative', or omitted")
-    return value
+    if not isinstance(value, dict):
+        raise ConfigError("stage home_direction must map each configured axis to 'positive' or 'negative'")
+    directions = {str(axis): str(direction) for axis, direction in value.items()}
+    invalid = {axis: direction for axis, direction in directions.items() if direction not in ("positive", "negative")}
+    if invalid:
+        raise ConfigError(f"stage home_direction contains invalid directions: {invalid}")
+    return directions
 
 
-def _validate_stage_axes(resolution: dict[str, float], soft_limits: dict[str, list[float]]) -> None:
+def _validate_stage_axes(
+    resolution: dict[str, float],
+    soft_limits: dict[str, list[float]],
+    home_direction: dict[str, str] | None,
+) -> None:
+    unsupported = set(resolution) - {"x", "y", "z"}
+    if unsupported:
+        raise ConfigError(f"stage contains unsupported axes: {sorted(unsupported)}")
     for field, mapping in (("resolution_um", resolution), ("soft_limits_um", soft_limits)):
         missing = [axis for axis in _REQUIRED_AXES if axis not in mapping]
         if missing:
@@ -275,6 +288,10 @@ def _validate_stage_axes(resolution: dict[str, float], soft_limits: dict[str, li
     if resolution.keys() != soft_limits.keys():
         raise ConfigError(
             f"stage resolution_um axes {sorted(resolution)} must match soft_limits_um axes {sorted(soft_limits)}"
+        )
+    if home_direction is not None and home_direction.keys() != resolution.keys():
+        raise ConfigError(
+            f"stage home_direction axes {sorted(home_direction)} must match configured stage axes {sorted(resolution)}"
         )
 
 
@@ -293,6 +310,8 @@ def _parse_light(light: dict[str, Any]) -> LightConfig:
     light_type = str(light["type"])
     manual_control = _as_bool(light["manual_light_control"], field="manual_light_control")
     if light_type == "manual":
+        if not manual_control:
+            raise ConfigError("manual light requires manual_light_control=true")
         return LightConfig(type=light_type, manual_light_control=manual_control)
     if light_type == "pwm_modbus":
         from lab_auto.devices.light_safety import validate_pwm_light_config
@@ -327,29 +346,54 @@ def load_devices_config(path: str | Path) -> DevicesConfig:
         light = data["light"]
         resolution_um = _resolution_um(stage["resolution_um"])
         soft_limits_um = _soft_limits_um(stage["soft_limits_um"])
-        _validate_stage_axes(resolution_um, soft_limits_um)
+        home_direction = _parse_home_direction(stage.get("home_direction"))
+        _validate_stage_axes(resolution_um, soft_limits_um, home_direction)
+        stage_type = str(stage["type"])
+        stage_port = str(stage["port"])
+        baudrate = _finite_int(stage["baudrate"], field="baudrate")
+        default_speed = _finite_int(stage["default_speed"], field="default_speed")
+        max_unknown_move_um = _finite_float(stage["max_unknown_move_um"], field="max_unknown_move_um")
+        state_file = str(stage["state_file"])
+        spectrometer_type = str(spectrometer["type"])
+        camera_type = str(camera["type"])
+        if stage_type != "waynelabs_linear":
+            raise ConfigError(f"unsupported stage type: {stage_type}")
+        if spectrometer_type != "zolix":
+            raise ConfigError(f"unsupported spectrometer type: {spectrometer_type}")
+        if camera_type != "dfield_vs_a4":
+            raise ConfigError(f"unsupported camera type: {camera_type}")
+        if not stage_port.strip():
+            raise ConfigError("stage port cannot be empty")
+        if baudrate <= 0:
+            raise ConfigError("stage baudrate must be positive")
+        if not 0 <= default_speed <= 9:
+            raise ConfigError("stage default_speed must be between 0 and 9")
+        if max_unknown_move_um < 0:
+            raise ConfigError("stage max_unknown_move_um cannot be negative")
+        if not state_file.strip():
+            raise ConfigError("stage state_file cannot be empty")
         return DevicesConfig(
             runtime=RuntimeConfig(
                 mode=parse_runtime_mode(runtime.get("mode")),
                 log_level=str(runtime.get("log_level", "info")),
             ),
             stage=StageConfig(
-                type=str(stage["type"]),
-                port=str(stage["port"]),
-                baudrate=_finite_int(stage["baudrate"], field="baudrate"),
+                type=stage_type,
+                port=stage_port,
+                baudrate=baudrate,
                 resolution_um=resolution_um,
-                default_speed=_finite_int(stage["default_speed"], field="default_speed"),
+                default_speed=default_speed,
                 soft_limits_um=soft_limits_um,
-                state_file=Path(stage["state_file"]),
-                max_unknown_move_um=_finite_float(stage["max_unknown_move_um"], field="max_unknown_move_um"),
-                home_direction=_parse_home_direction(stage.get("home_direction")),
+                state_file=Path(state_file),
+                max_unknown_move_um=max_unknown_move_um,
+                home_direction=home_direction,
             ),
             spectrometer=SpectrometerConfig(
-                type=str(spectrometer["type"]),
+                type=spectrometer_type,
                 dll_path=Path(spectrometer["dll_path"]),
                 usb_mode=_as_bool(spectrometer.get("usb_mode", True), field="usb_mode"),
             ),
-            camera=CameraConfig(type=str(camera["type"]), dll_path=Path(camera["dll_path"])),
+            camera=CameraConfig(type=camera_type, dll_path=Path(camera["dll_path"])),
             light=_parse_light(light),
         )
     except KeyError as exc:
@@ -363,15 +407,31 @@ def validate_sample_id(sample_id: str) -> str:
 
     It becomes a filesystem path component (run dir / manifest), so '../x' or
     'a/b' would escape the output directory. Public so any layer that supplies an
-    id out-of-band (e.g. the web panel's override) can re-apply the same guard.
+    id out-of-band (for example, an API override) can re-apply the same guard.
     """
-    if not sample_id or sample_id in (".", "..") or any(ch in sample_id for ch in "/\\") or "\x00" in sample_id:
-        raise ConfigError(f"sample.id must be a safe filename token (no path separators): {sample_id!r}")
+    invalid_chars = '<>:"/\\|?*'
+    reserved = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+    stem = sample_id.split(".", 1)[0].upper()
+    if (
+        not sample_id
+        or len(sample_id) > 128
+        or sample_id != sample_id.strip()
+        or sample_id in (".", "..")
+        or sample_id[-1] in (" ", ".")
+        or stem in reserved
+        or any(ch in invalid_chars or ord(ch) < 32 for ch in sample_id)
+    ):
+        raise ConfigError(f"sample.id must be a Windows-safe filename token: {sample_id!r}")
     return sample_id
 
 
 def _parse_sample(sample: Any) -> SampleConfig:
-    return SampleConfig(id=validate_sample_id(str(sample["id"])), operator=str(sample["operator"]))
+    if sample["id"] is None or sample["operator"] is None:
+        raise ConfigError("sample.id and sample.operator cannot be null")
+    operator = str(sample["operator"]).strip()
+    if not operator:
+        raise ConfigError("sample.operator cannot be empty")
+    return SampleConfig(id=validate_sample_id(str(sample["id"])), operator=operator)
 
 
 def _parse_optics(optics: Any) -> OpticsConfig:
@@ -398,9 +458,12 @@ def _parse_output(output: Any) -> OutputConfig:
     formats = output["formats"]
     if not isinstance(formats, list):
         raise ConfigError("output.formats must be a list")
+    normalized = [str(item).lower() for item in formats]
+    if len(normalized) != 2 or set(normalized) != {"csv", "json"}:
+        raise ConfigError("output.formats must contain exactly [csv, json]; both workflow outputs are required")
     return OutputConfig(
         directory=Path(output["directory"]),
-        formats=[str(item) for item in formats],
+        formats=normalized,
     )
 
 
@@ -513,6 +576,13 @@ def _parse_calibration(calibration: Any) -> Calibration:
     for axis, value in (("image_width_px", result.image_width_px), ("image_height_px", result.image_height_px)):
         if value is not None and value <= 0:
             raise ConfigError(f"calibration.{axis} must be positive")
+    if (result.image_width_px is None) != (result.image_height_px is None):
+        raise ConfigError("calibration image_width_px and image_height_px must be set together")
+    if result.image_width_px is not None:
+        if not 0 <= result.image_center_px < result.image_width_px:
+            raise ConfigError("calibration.image_center_px must be inside the declared image width")
+        if not 0 <= result.image_center_py < result.image_height_px:
+            raise ConfigError("calibration.image_center_py must be inside the declared image height")
     return result
 
 

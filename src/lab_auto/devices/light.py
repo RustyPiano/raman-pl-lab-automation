@@ -1,3 +1,4 @@
+import threading
 import time
 
 from lab_auto.config import LightConfig
@@ -80,6 +81,9 @@ class PwmModbusLight:
         self.station = config.station_id
         self.laser_state = "unknown"
         self.led_state = "unknown"
+        # Emergency-stop may use this same open serial handle from another thread.
+        # Serialize whole interlock sequences so an OFF cannot interleave with ON.
+        self._lock = threading.RLock()
 
     # --- workflow-facing interface (matches ManualLight) ---------------
 
@@ -106,87 +110,101 @@ class PwmModbusLight:
         hardware rather than only the software state machine. dry_run returns the
         software state.
         """
-        if self.dry_run:
-            return {"laser_state": self.laser_state, "led_state": self.led_state}
-        voltage = self._read(VOLTAGE_REGISTER, 1)[0]
-        states = self._read(output_state_register(1), 5)
-        channel_states = dict(zip(self._ALL_CHANNELS, states))
-        return {
-            "voltage_register": voltage,
-            "channel_states": channel_states,
-            "laser_state": self.laser_state,
-            "led_state": self.led_state,
-        }
+        with self._lock:
+            if self.dry_run:
+                return {"laser_state": self.laser_state, "led_state": self.led_state}
+            voltage = self._read(VOLTAGE_REGISTER, 1)[0]
+            states = self._read(output_state_register(1), 5)
+            channel_states = dict(zip(self._ALL_CHANNELS, states))
+            self.laser_state = "off_confirmed" if channel_states[self._channel("laser").channel] == 0 else "on_confirmed"
+            led = (self.config.channels or {}).get("led")
+            self.led_state = (
+                "off_confirmed" if led is not None and channel_states[led.channel] == 0
+                else "on_confirmed" if led is not None
+                else "unknown"
+            )
+            return {
+                "voltage_register": voltage,
+                "channel_states": channel_states,
+                "laser_state": self.laser_state,
+                "led_state": self.led_state,
+            }
 
     def safety_reset(self) -> None:
         """Force every channel off with read-back confirmation (power-on / e-stop).
 
         Reused as the power-on safety reset in the factory and for any emergency
-        stop path. Raises ``DeviceError`` if a CONFIGURED channel cannot be
+        stop path. Raises ``DeviceError`` if any physical channel cannot be
         confirmed OFF.
         """
-        if self.dry_run:
+        with self._lock:
+            if self.dry_run:
+                self.laser_state = "off_confirmed"
+                self.led_state = "off_confirmed"
+                return
+            failures = self._all_off_with_retry()
+            if failures:
+                self.laser_state = "manual_wait"
+                raise DeviceError(f"power-on safety reset failed to confirm channels OFF: {sorted(failures)}")
             self.laser_state = "off_confirmed"
             self.led_state = "off_confirmed"
-            return
-        failures = self._all_off_with_retry()
-        if failures:
-            self.laser_state = "manual_wait"
-            raise DeviceError(f"power-on safety reset failed to confirm channels OFF: {sorted(failures)}")
-        self.laser_state = "off_confirmed"
-        self.led_state = "off_confirmed"
 
     def close(self, *, all_off: bool = True) -> None:
         # Safety net: force every channel off before dropping the transport, so a
         # failure path that left the laser on gets one last chance to turn it off.
         # ``all_off=False`` is for read-only status teardown that must not touch
         # any channel.
-        if all_off and not self.dry_run:
-            try:
-                self._all_off()
-            except Exception:  # noqa: BLE001 - teardown must never be blocked
-                pass
-        close = getattr(self.transport, "close", None)
-        if close is not None:
-            close()
+        with self._lock:
+            if all_off and not self.dry_run:
+                try:
+                    self._all_off()
+                except Exception:  # noqa: BLE001 - teardown must never be blocked
+                    pass
+            close = getattr(self.transport, "close", None)
+            if close is not None:
+                close()
 
     # --- channel control ----------------------------------------------
 
     def laser_on(self) -> None:
-        if self.dry_run:
+        with self._lock:
+            if self.dry_run:
+                self.laser_state = "on_confirmed"
+                return
+            self._open_channel(self._channel("laser"))
             self.laser_state = "on_confirmed"
-            return
-        self._open_channel(self._channel("laser"))
-        self.laser_state = "on_confirmed"
 
     def led_on(self) -> None:
-        if self.dry_run:
-            self.led_state = "on_confirmed"
-            return
-        self._open_channel(self._channel("led"))
-        self.led_state = "on_confirmed"  # never satisfies the laser precondition
+        with self._lock:
+            if self.dry_run:
+                self.led_state = "on_confirmed"
+                return
+            self._open_channel(self._channel("led"))
+            self.led_state = "on_confirmed"  # never satisfies the laser precondition
 
     def laser_off(self) -> None:
-        if self.dry_run:
+        with self._lock:
+            if self.dry_run:
+                self.laser_state = "off_confirmed"
+                return
+            failures = self._all_off_with_retry()
+            if failures:
+                self.laser_state = "manual_wait"
+                raise DeviceError(f"failed to confirm laser OFF for channels: {sorted(failures)}")
             self.laser_state = "off_confirmed"
-            return
-        failures = self._all_off_with_retry()
-        if failures:
-            self.laser_state = "manual_wait"
-            raise DeviceError(f"failed to confirm laser OFF for channels: {sorted(failures)}")
-        self.laser_state = "off_confirmed"
-        self.led_state = "off_confirmed"
+            self.led_state = "off_confirmed"
 
     def led_off(self) -> None:
-        if self.dry_run:
+        with self._lock:
+            if self.dry_run:
+                self.led_state = "off_confirmed"
+                return
+            failures = self._all_off_with_retry()
+            if failures:
+                self.led_state = "manual_wait"
+                raise DeviceError(f"failed to confirm LED OFF for channels: {sorted(failures)}")
+            self.laser_state = "off_confirmed"
             self.led_state = "off_confirmed"
-            return
-        failures = self._all_off_with_retry()
-        if failures:
-            self.led_state = "manual_wait"
-            raise DeviceError(f"failed to confirm LED OFF for channels: {sorted(failures)}")
-        self.laser_state = "off_confirmed"
-        self.led_state = "off_confirmed"
 
     def ensure_voltage_setpoint(self) -> None:
         """Guarded Reg1 write: only when every channel reads back off.
@@ -199,15 +217,16 @@ class PwmModbusLight:
         controller — if it isn't persisted across power cycles, wire this into the
         bring-up sequence.
         """
-        if self.dry_run:
-            return
-        states = self._read(output_state_register(1), 5)
-        if any(state != 0 for state in states):
-            raise DeviceError("cannot write Reg1 while any PWM channel is on")
-        target = voltage_to_register(self.config.required_output_voltage_v)
-        self._write_single(VOLTAGE_REGISTER, target)
-        if self._read(VOLTAGE_REGISTER, 1)[0] != target:
-            raise DeviceError("Reg1 voltage readback mismatch after write")
+        with self._lock:
+            if self.dry_run:
+                return
+            states = self._read(output_state_register(1), 5)
+            if any(state != 0 for state in states):
+                raise DeviceError("cannot write Reg1 while any PWM channel is on")
+            target = voltage_to_register(self.config.required_output_voltage_v)
+            self._write_single(VOLTAGE_REGISTER, target)
+            if self._read(VOLTAGE_REGISTER, 1)[0] != target:
+                raise DeviceError("Reg1 voltage readback mismatch after write")
 
     # --- internals -----------------------------------------------------
 
@@ -257,21 +276,18 @@ class PwmModbusLight:
     _ALL_CHANNELS = (1, 2, 3, 4, 5)
 
     def _all_off(self) -> set[int]:
-        # Drive EVERY physical channel off (so an energized unconfigured channel
-        # can't stay on while we report the laser OFF), but only a CONFIGURED
-        # channel's failed read-back counts as a confirmation failure. Unconfigured
-        # channels (3-5 are unwired on this rig) must not false-alarm the validated
-        # laser-off interlock into manual_wait.
-        configured = {ch.channel for ch in (self.config.channels or {}).values()}
+        # Drive and confirm EVERY physical channel off. The software cannot safely
+        # assume an unconfigured output remains unwired for the life of the rig.
         failures: set[int] = set()
-        for channel in self._ALL_CHANNELS:
+        laser_channel = self._channel("laser").channel
+        for channel in (laser_channel, *(item for item in self._ALL_CHANNELS if item != laser_channel)):
             register = output_state_register(channel)
             try:
                 self._write_single(register, 0)
                 confirmed = self._read(register, 1)[0] == 0
             except DeviceError:
                 confirmed = False
-            if not confirmed and channel in configured:
+            if not confirmed:
                 failures.add(channel)
         return failures
 

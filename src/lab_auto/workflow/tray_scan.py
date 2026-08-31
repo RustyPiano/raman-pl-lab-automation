@@ -7,6 +7,7 @@ Composes the pure M2 modules (mask centers, affine calibration, tray geometry,
 scan pattern, burn check). Writes an interruptible/resumable manifest.
 """
 
+import hashlib
 import json
 import math
 import os
@@ -28,14 +29,15 @@ def _fmt(x: float, y: float) -> str:
     return f"{x:.3f},{y:.3f}"
 
 
-def simulated_mask_provider():
+def simulated_mask_provider(min_area: int = 1):
     """A deterministic mask provider for dry-run/preview.
 
-    Returns a single foreground blob so ``plan()`` previews the full
-    per-center / per-point sequence without any recognition code or hardware.
+    Returns one foreground blob sized to survive the configured area threshold,
+    so ``plan()`` previews the full sequence without recognition code or hardware.
     """
 
-    blob = [[1, 1, 1], [1, 1, 1], [1, 1, 1]]
+    side = math.isqrt(min_area - 1) + 1
+    blob = [[1] * side for _ in range(side)]
 
     def provider(wafer):
         return blob
@@ -72,7 +74,7 @@ class TrayScanWorkflow:
 
     def _centers_for(self, wafer, *, verify_space: bool = False):
         # verify_space only on the real-run path: plan()/dry-run uses the simulated
-        # 3x3 mask for preview and never drives the stage, so the size guard (which
+        # simulated mask for preview and never drives the stage, so the size guard (which
         # would reject that tiny mask under a sized calibration) must not fire there.
         mask = self.mask_provider(wafer)
         if verify_space:
@@ -188,7 +190,9 @@ class TrayScanWorkflow:
                     if key in done:
                         continue
                     _check_cancel()  # before starting a new measurement point
-                    point = self._measure_point(wafer, center, role, x, y, require_confirmation)
+                    point = self._measure_point(
+                        wafer, center, role, x, y, require_confirmation, should_cancel
+                    )
                     center_entry["points"].append(point)
                     done.add(key)
                     self._write_manifest(manifest_path, manifest)
@@ -219,7 +223,9 @@ class TrayScanWorkflow:
         self._write_manifest(manifest_path, manifest)
         return centers
 
-    def _measure_point(self, wafer, center, role, x, y, require_confirmation) -> dict:
+    def _measure_point(
+        self, wafer, center, role, x, y, require_confirmation, should_cancel
+    ) -> dict:
         if not self._within_limits(x, y):
             if self.config.on_out_of_range == "abort":
                 raise SafetyError(f"measurement point out of soft limits: {_fmt(x, y)}")
@@ -237,6 +243,7 @@ class TrayScanWorkflow:
                 role=role,
                 repeat=repeat,
                 require_confirmation=require_confirmation,
+                should_cancel=should_cancel,
             )
             spectra.append(list(result.intensities))
             outputs.append(str(result.output_path))
@@ -262,16 +269,40 @@ class TrayScanWorkflow:
     # -- manifest --------------------------------------------------------
 
     def _config_fingerprint(self) -> dict:
-        """Identity of the geometry/calibration/pattern a manifest was produced under.
+        """Identity of every experiment condition a manifest was produced under.
 
-        A resume that reused an output directory with a different tray/calibration/
-        pattern would skip or mix measurements taken at old coordinates.
+        A resume under any changed sample, optical, acquisition, geometry, or
+        pattern condition would otherwise skip or mix incompatible measurements.
         """
         c = self.config
+        devices_path = c.devices_config.resolve()
+        try:
+            devices_digest = hashlib.sha256(devices_path.read_bytes()).hexdigest()
+        except OSError:
+            devices_digest = None
         return {
+            "runtime_mode": self.runtime_mode,
+            "devices_config": [str(devices_path), devices_digest],
+            "sample": [c.sample.id, c.sample.operator],
+            "optics": [
+                c.optics.entrance_port,
+                c.optics.exit_port,
+                c.optics.grating,
+                c.optics.center_wavelength_nm,
+                c.optics.slit_width_um,
+            ],
+            "acquisition": [
+                c.acquisition.exposure_ms,
+                c.acquisition.gain,
+                c.acquisition.read_mode,
+                c.acquisition.frames,
+                c.acquisition.subtract_background,
+            ],
+            "output_formats": list(c.output.formats),
             "tray": [c.tray.rows, c.tray.cols, c.tray.pitch_x_um, c.tray.pitch_y_um,
                      c.tray.first_cell_offset_x_um, c.tray.first_cell_offset_y_um, c.tray.order],
-            "calibration": [c.calibration.a11, c.calibration.a12, c.calibration.a21, c.calibration.a22,
+            "calibration": [c.calibration.objective,
+                            c.calibration.a11, c.calibration.a12, c.calibration.a21, c.calibration.a22,
                             c.calibration.image_center_px, c.calibration.image_center_py,
                             c.calibration.image_width_px, c.calibration.image_height_px],
             "pattern": [c.pattern.repeats_per_point, c.pattern.surrounding_count,
@@ -288,9 +319,9 @@ class TrayScanWorkflow:
             except (ValueError, OSError) as exc:
                 raise ConfigError(f"existing manifest is corrupt/unreadable (delete to restart): {path}") from exc
             existing = manifest.get("config_fingerprint")
-            if existing is not None and existing != self._config_fingerprint():
+            if existing != self._config_fingerprint():
                 raise ConfigError(
-                    f"manifest at {path} was produced under a different tray/calibration/pattern; "
+                    f"manifest at {path} was produced under a different experiment configuration; "
                     "use a fresh output directory or the matching config"
                 )
             done = set()

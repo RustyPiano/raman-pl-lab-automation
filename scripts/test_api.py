@@ -2,9 +2,27 @@
 """Test script for FastAPI backend."""
 import json
 import time
-import requests
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 BASE_URL = "http://127.0.0.1:8008"
+
+
+def request_json(path, payload=None):
+    data = json.dumps(payload).encode() if payload is not None else None
+    request = Request(
+        f"{BASE_URL}{path}",
+        data=data,
+        headers={"Content-Type": "application/json"} if data else {},
+        method="POST" if data else "GET",
+    )
+    try:
+        response = urlopen(request, timeout=10)
+    except HTTPError as exc:
+        response = exc
+    with response:
+        raw = response.read()
+        return response.getcode(), json.loads(raw) if raw else None
 
 
 def test_health():
@@ -13,10 +31,10 @@ def test_health():
     print("Testing Health Check")
     print("=" * 60)
 
-    response = requests.get(f"{BASE_URL}/health")
-    print(f"Status: {response.status_code}")
-    print(f"Response: {json.dumps(response.json(), indent=2)}")
-    assert response.status_code == 200
+    status, body = request_json("/health")
+    print(f"Status: {status}")
+    print(f"Response: {json.dumps(body, indent=2)}")
+    assert status == 200
     print("✓ Health check passed\n")
 
 
@@ -26,10 +44,10 @@ def test_api_health():
     print("Testing API Health Check")
     print("=" * 60)
 
-    response = requests.get(f"{BASE_URL}/api/health")
-    print(f"Status: {response.status_code}")
-    print(f"Response: {json.dumps(response.json(), indent=2)}")
-    assert response.status_code == 200
+    status, body = request_json("/api/health")
+    print(f"Status: {status}")
+    print(f"Response: {json.dumps(body, indent=2)}")
+    assert status == 200
     print("✓ API health check passed\n")
 
 
@@ -39,16 +57,16 @@ def test_list_configs():
     print("Testing List Configs")
     print("=" * 60)
 
-    response = requests.get(f"{BASE_URL}/api/configs?config_dir=configs")
-    print(f"Status: {response.status_code}")
-    if response.status_code == 200:
-        data = response.json()
+    status, body = request_json("/api/configs")
+    print(f"Status: {status}")
+    if status == 200:
+        data = body
         print(f"Found {len(data.get('configs', []))} config files:")
         for config in data.get('configs', [])[:5]:
             print(f"  - {config}")
         print("✓ List configs passed\n")
     else:
-        print(f"Response: {response.text}")
+        print(f"Response: {json.dumps(body)}")
         print("⚠ List configs failed (may be expected if configs/ doesn't exist)\n")
 
 
@@ -60,20 +78,20 @@ def test_single_point_simulated():
 
     # Start job
     payload = {
-        "config_path": "configs/single_point_532nm.yaml",
+        "config_path": "single_point.example.yaml",
         "mode": "simulated"
     }
 
     print(f"Submitting job: {json.dumps(payload, indent=2)}")
-    response = requests.post(f"{BASE_URL}/api/workflow/single-point", json=payload)
-    print(f"Status: {response.status_code}")
+    status, body = request_json("/api/workflow/single-point", payload)
+    print(f"Status: {status}")
 
-    if response.status_code != 200:
-        print(f"Response: {response.text}")
+    if status != 200:
+        print(f"Response: {json.dumps(body)}")
         print("⚠ Single-point submission failed (config file may not exist)\n")
         return None
 
-    job = response.json()
+    job = body
     job_id = job['id']
     print(f"Job created: {job_id}")
     print(f"Initial status: {job['status']}\n")
@@ -81,21 +99,21 @@ def test_single_point_simulated():
     # Poll job status
     print("Polling job status...")
     for i in range(10):
-        response = requests.get(f"{BASE_URL}/api/workflow/jobs/{job_id}")
-        if response.status_code == 200:
-            job = response.json()
+        status, body = request_json(f"/api/workflow/jobs/{job_id}")
+        if status == 200:
+            job = body
             status = job['status']
             progress = job.get('progress', {})
-            print(f"  [{i+1}] Status: {status}, Progress: {progress.get('percentage', 0):.1f}%")
+            print(f"  [{i+1}] Status: {status}, Progress: {progress.get('percentage') or 0:.1f}%")
 
             if status in ('completed', 'failed', 'stopped'):
                 break
         time.sleep(1)
 
     # Final status
-    response = requests.get(f"{BASE_URL}/api/workflow/jobs/{job_id}")
-    if response.status_code == 200:
-        job = response.json()
+    status, body = request_json(f"/api/workflow/jobs/{job_id}")
+    if status == 200:
+        job = body
         print(f"\nFinal status: {job['status']}")
         if job.get('result'):
             print(f"Result: {json.dumps(job['result'], indent=2)}")
@@ -116,17 +134,17 @@ def test_list_jobs():
     print("Testing List Jobs")
     print("=" * 60)
 
-    response = requests.get(f"{BASE_URL}/api/workflow/jobs")
-    print(f"Status: {response.status_code}")
+    status, body = request_json("/api/workflow/jobs")
+    print(f"Status: {status}")
 
-    if response.status_code == 200:
-        jobs = response.json()
+    if status == 200:
+        jobs = body
         print(f"Found {len(jobs)} jobs:")
         for job in jobs[-3:]:  # Show last 3
             print(f"  - {job['id']}: {job['type']} ({job['status']})")
         print("✓ List jobs passed\n")
     else:
-        print(f"Response: {response.text}\n")
+        print(f"Response: {json.dumps(body)}\n")
 
 
 def main():
@@ -149,10 +167,10 @@ def main():
         print("All tests completed!")
         print("=" * 60)
 
-    except requests.exceptions.ConnectionError:
+    except URLError:
         print("\n❌ Error: Cannot connect to server at", BASE_URL)
         print("Make sure the server is running:")
-        print("  ./start_api.sh")
+        print("  ./scripts/start_api.sh")
         print("\nor:")
         print("  PYTHONPATH=src uvicorn lab_auto.api.main:app --port 8008")
         return 1

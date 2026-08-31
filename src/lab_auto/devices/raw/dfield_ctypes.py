@@ -1,11 +1,16 @@
 import ctypes
 import math
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from lab_auto.devices.dfield_validation import validate_dfield_bin_roi, validate_dfield_image_size
-from lab_auto.errors import ConfigError, DeviceError
+from lab_auto.devices.dfield_validation import (
+    validate_dfield_bin_roi,
+    validate_dfield_capture_args,
+    validate_dfield_image_size,
+)
+from lab_auto.errors import ConfigError, DeviceError, WorkflowCancelled
 
 
 WindowsLong = ctypes.c_int32
@@ -35,17 +40,6 @@ REQUIRED_EXPORTS = (
 
 def _is_integer_code(value: int, allowed: tuple[int, ...]) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value in allowed
-
-
-def _is_positive_finite_number(value: float) -> bool:
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
-        return False
-    try:
-        number = float(value)
-    except (OverflowError, TypeError, ValueError):
-        return False
-    cast = ctypes.c_float(number).value
-    return math.isfinite(number) and math.isfinite(cast) and cast > 0
 
 
 @dataclass(frozen=True)
@@ -158,18 +152,21 @@ class DFieldRawClient:
         bin_x: int = 1,
         bin_y: int = 1,
         roi: tuple[int, int, int, int] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> dict:
         if not _is_integer_code(read_mode_code, (0, 1)):
             raise ConfigError("DField read_mode_code must be 0 or 1")
-        if not _is_positive_finite_number(exposure_ms):
-            raise ConfigError("DField exposure_ms must be positive")
         if not _is_integer_code(gain_code, (0, 1)):
             raise ConfigError("DField gain_code must be 0 or 1")
-        if not isinstance(frames, int) or isinstance(frames, bool) or frames < 1:
-            raise ConfigError("DField frames must be at least 1")
-        if read_mode_code == 0 and roi is not None:
-            raise ConfigError("DField ROI is only supported for image read_mode")
-        validate_dfield_bin_roi(bin_x=bin_x, bin_y=bin_y, roi=roi)
+        validate_dfield_capture_args(
+            read_mode="fvb" if read_mode_code == 0 else "image",
+            exposure_ms=exposure_ms,
+            gain="high" if gain_code == 0 else "low",
+            frames=frames,
+            bin_x=bin_x,
+            bin_y=bin_y,
+            roi=roi,
+        )
         frame_count = int(frames)
         self._ensure_open()
         width = ctypes.c_int()
@@ -187,6 +184,23 @@ class DFieldRawClient:
             self._require_ok(
                 "set_roi",
                 self.lib.a4_set_roi(int(selected_roi[0]), int(selected_roi[1]), int(selected_roi[2]), int(selected_roi[3])),
+            )
+        actual_exposure = ctypes.c_float()
+        actual_gain = ctypes.c_int()
+        actual_read_mode = ctypes.c_int()
+        self._require_ok("get_exposure", self.lib.a4_get_exposure(ctypes.byref(actual_exposure)))
+        self._require_ok("get_gain", self.lib.a4_get_gain(ctypes.byref(actual_gain)))
+        self._require_ok("get_read_mode", self.lib.a4_get_read_mode(ctypes.byref(actual_read_mode)))
+        expected_exposure = ctypes.c_float(exposure_ms).value
+        if not math.isclose(actual_exposure.value, expected_exposure, rel_tol=1e-6, abs_tol=1e-3):
+            raise DeviceError(
+                f"DField exposure readback mismatch (read {actual_exposure.value}, need {expected_exposure})"
+            )
+        if actual_gain.value != gain_code:
+            raise DeviceError(f"DField gain readback mismatch (read {actual_gain.value}, need {gain_code})")
+        if actual_read_mode.value != read_mode_code:
+            raise DeviceError(
+                f"DField read-mode readback mismatch (read {actual_read_mode.value}, need {read_mode_code})"
             )
         bin_x = ctypes.c_int()
         bin_y = ctypes.c_int()
@@ -214,8 +228,12 @@ class DFieldRawClient:
         totals = [0 for _ in range(size)]
         saturated = [False for _ in range(size)]
         for _ in range(frame_count):
+            if should_cancel is not None and should_cancel():
+                raise WorkflowCancelled("DField capture cancelled between frames")
             buffer = windows_long_array(size)
             self._require_ok("single_capture", self.lib.a4_single_capture(buffer, size))
+            if should_cancel is not None and should_cancel():
+                raise WorkflowCancelled("DField capture cancelled after the active frame")
             for index in range(size):
                 value = int(buffer[index])
                 totals[index] += value

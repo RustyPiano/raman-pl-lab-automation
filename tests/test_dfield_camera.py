@@ -141,6 +141,7 @@ def test_adapter_rejects_fvb_roi_before_raw_capture():
     [
         {"exposure_ms": 60_001},
         {"frames": 1001},
+        {"exposure_ms": 1000, "frames": 61},
     ],
 )
 def test_adapter_rejects_capture_args_over_safety_caps(kwargs):

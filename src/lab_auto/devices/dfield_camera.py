@@ -1,4 +1,5 @@
 import csv
+from collections.abc import Callable
 from pathlib import Path
 
 from lab_auto.devices.dfield_validation import validate_dfield_capture_args
@@ -52,6 +53,7 @@ class DFieldCamera:
         bin_x: int = 1,
         bin_y: int = 1,
         roi: tuple[int, int, int, int] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> CaptureFrame:
         validate_dfield_capture_args(
             read_mode=read_mode,
@@ -62,7 +64,7 @@ class DFieldCamera:
             bin_y=bin_y,
             roi=roi,
         )
-        result = self.raw.capture(
+        capture_kwargs = dict(
             read_mode_code=read_mode_to_code(read_mode),
             exposure_ms=exposure_ms,
             gain_code=gain_to_code(gain),
@@ -71,6 +73,9 @@ class DFieldCamera:
             bin_y=bin_y,
             roi=roi,
         )
+        if should_cancel is not None:
+            capture_kwargs["should_cancel"] = should_cancel
+        result = self.raw.capture(**capture_kwargs)
         return CaptureFrame(
             read_mode=read_mode,
             width=result["width"],
