@@ -1,0 +1,27 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "grep -q 'git commit' && echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"你刚执行了 git commit。按 CLAUDE.md 的状态文档维护约定，请检查 docs/PROJECT_STATUS.md 是否与这次提交一致（当前阶段/最近完成/下一步/已知问题），需要就现在更新，并把「最后更新」改为今天。\"}}' || true",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/check-project-status.sh\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

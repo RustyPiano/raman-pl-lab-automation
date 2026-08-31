@@ -4,7 +4,7 @@ import json
 from lab_auto.config import AcquisitionConfig, OpticsConfig, OutputConfig, SampleConfig, WorkflowConfig
 from lab_auto.devices.light import ManualLight
 from lab_auto.devices.simulated import SimulatedCamera, SimulatedSpectrometer
-from lab_auto.errors import ConfigError
+from lab_auto.errors import ConfigError, WorkflowCancelled
 from lab_auto.workflow.data import CaptureFrame
 from lab_auto.workflow.raman import RamanWorkflow
 
@@ -223,6 +223,48 @@ def test_real_workflow_close_closes_owned_light(tmp_path: Path):
     assert spectrometer.closed is True
     assert camera.closed is True
     assert light.closed is True
+
+
+def test_run_single_point_cancels_before_any_hardware(tmp_path: Path):
+    # should_cancel True from the start: raise at the first checkpoint (after config
+    # validation, before the run dir is created) — nothing to clean up.
+    workflow = RamanWorkflow.simulated(workflow_config(tmp_path))
+
+    try:
+        workflow.run_single_point(require_confirmation=False, should_cancel=lambda: True)
+    except WorkflowCancelled:
+        pass
+    else:
+        raise AssertionError("expected WorkflowCancelled")
+
+    assert list(tmp_path.iterdir()) == []  # no run directory written
+
+
+def test_run_single_point_cancel_before_laser_on_forces_laser_off(tmp_path: Path):
+    # Cancelling at the 'before laser on' checkpoint must route through the failure
+    # path that forces a laser-off confirmation, without ever turning the laser on.
+    workflow = RamanWorkflow.simulated(workflow_config_without_background(tmp_path))
+    workflow.spectrometer = NoCalibrationSpectrometer()
+    workflow.light = TrackingLight()
+    workflow.camera = LightAwareCamera(workflow.light)
+
+    calls = {"n": 0}
+
+    def should_cancel():
+        # checkpoints (no background): 1=after validate, 2=before configure,
+        # 3=before laser on -> trigger here.
+        calls["n"] += 1
+        return calls["n"] >= 3
+
+    try:
+        workflow.run_single_point(require_confirmation=False, should_cancel=should_cancel)
+    except WorkflowCancelled:
+        pass
+    else:
+        raise AssertionError("expected WorkflowCancelled")
+
+    # laser never turned on; the failure path confirmed it OFF
+    assert workflow.light.calls == ["off"]
 
 
 def test_single_workflow_confirms_laser_off_on_failure(tmp_path: Path):

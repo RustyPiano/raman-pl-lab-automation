@@ -83,6 +83,13 @@ def test_negative_burn_threshold_rejected(tmp_path):
         load_tray_scan_config(_write(tmp_path, body))
 
 
+def test_zero_burn_threshold_rejected(tmp_path):
+    # threshold 0 would flag every point as burned
+    body = _valid_body().replace("burn_threshold: 0.1", "burn_threshold: 0")
+    with pytest.raises(ConfigError):
+        load_tray_scan_config(_write(tmp_path, body))
+
+
 def test_path_injecting_sample_id_rejected(tmp_path):
     body = _valid_body().replace("id: tray-001", "id: ../../etc/evil")
     with pytest.raises(ConfigError):
@@ -94,4 +101,21 @@ def test_near_singular_calibration_rejected(tmp_path):
     body = _valid_body().replace("a11: 0.5", "a11: 2e-13").replace("a22: 0.5", "a22: 1.0")
     body = body.replace("a12: 0.0", "a12: 0.0").replace("a21: 0.0", "a21: 0.0")
     with pytest.raises(ConfigError):
+        load_tray_scan_config(_write(tmp_path, body))
+
+
+def test_calibration_image_dimensions_must_be_declared_together(tmp_path):
+    body = _valid_body().replace("  image_center_py: 240", "  image_center_py: 240\n  image_width_px: 640")
+
+    with pytest.raises(ConfigError, match="must be set together"):
+        load_tray_scan_config(_write(tmp_path, body))
+
+
+def test_calibration_image_center_must_be_inside_declared_frame(tmp_path):
+    body = _valid_body().replace(
+        "  image_center_py: 240",
+        "  image_center_py: 240\n  image_width_px: 320\n  image_height_px: 480",
+    )
+
+    with pytest.raises(ConfigError, match="image_center_px"):
         load_tray_scan_config(_write(tmp_path, body))

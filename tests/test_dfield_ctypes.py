@@ -3,7 +3,7 @@ import math
 import pytest
 
 from lab_auto.devices.raw.dfield_ctypes import DFieldRawClient, LoadedLibrary, configure_signatures, has_required_exports, windows_long_array
-from lab_auto.errors import ConfigError
+from lab_auto.errors import ConfigError, DeviceError, WorkflowCancelled
 
 
 class FakeLibrary:
@@ -248,6 +248,34 @@ def test_raw_capture_keeps_detector_dimensions_when_binned():
     assert frame["detector_height"] == 4
 
 
+def test_raw_capture_stops_between_frames_when_cancelled():
+    lib = FakeDFieldLibrary()
+    raw = DFieldRawClient(lib)
+    checks = iter((False, True))
+
+    with pytest.raises(WorkflowCancelled):
+        raw.capture(
+            read_mode_code=1,
+            exposure_ms=100,
+            gain_code=1,
+            frames=2,
+            should_cancel=lambda: next(checks),
+        )
+
+    assert lib.capture_sizes == [6]
+
+
+def test_raw_capture_refuses_exposure_readback_mismatch():
+    lib = FakeDFieldLibrary()
+    lib.exposure_readback = 1000
+    raw = DFieldRawClient(lib)
+
+    with pytest.raises(DeviceError, match="exposure readback mismatch"):
+        raw.capture(read_mode_code=1, exposure_ms=100, gain_code=1, frames=1)
+
+    assert lib.capture_sizes == []
+
+
 def test_required_exports_include_phase1_capture_operations():
     lib = FakeLibrary()
     for name in (
@@ -313,6 +341,7 @@ class FakeDFieldLibrary:
         self.set_read_mode_calls = []
         self.set_bin_calls = []
         self.set_roi_calls = []
+        self.exposure_readback = None
 
     def a4_open(self):
         self.open_calls += 1
@@ -328,6 +357,19 @@ class FakeDFieldLibrary:
 
     def a4_set_read_mode(self, read_mode):
         self.set_read_mode_calls.append(read_mode)
+        return True
+
+    def a4_get_exposure(self, exposure):
+        configured = self.set_exposure_calls[-1].value
+        exposure._obj.value = configured if self.exposure_readback is None else self.exposure_readback
+        return True
+
+    def a4_get_gain(self, gain):
+        gain._obj.value = self.set_gain_calls[-1]
+        return True
+
+    def a4_get_read_mode(self, read_mode):
+        read_mode._obj.value = self.set_read_mode_calls[-1]
         return True
 
     def a4_get_detector_size(self, width, height):

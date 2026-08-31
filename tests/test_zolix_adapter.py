@@ -26,7 +26,7 @@ def test_adapter_calls_raw_client_not_native_symbols():
 
     assert spec.set_entrance_port("side") is True
 
-    assert raw.calls == [("set_entrance_port", 7, False)]
+    assert raw.calls == [("set_entrance_port", 7, False), ("get_entrance_port", 7)]
 
 
 def test_adapter_exposes_phase1_cli_and_workflow_methods():
@@ -55,10 +55,15 @@ def test_adapter_exposes_phase1_cli_and_workflow_methods():
         ("get_current_wavelength_nm", 7),
         ("get_slit_width_um", 7),
         ("set_entrance_port", 7, False),
+        ("get_entrance_port", 7),
         ("set_exit_port", 7, True),
+        ("get_exit_port", 7),
         ("set_grating", 7, 1),
+        ("get_grating", 7),
         ("move_to_wavelength_nm", 7, 600.0),
+        ("get_current_wavelength_nm", 7),
         ("set_slit_width_um", 7, 100),
+        ("get_slit_width_um", 7),
         ("pixels_to_waves", 7, 0, 1, 600.0, 2048, 3, 1),
         ("close", 7),
     ]
@@ -70,6 +75,14 @@ def test_adapter_wraps_false_result_as_device_error():
 
     with pytest.raises(DeviceError, match="set_grating"):
         spec.set_grating(1)
+
+
+def test_adapter_rejects_setpoint_readback_mismatch():
+    raw = FakeZolixRaw()
+    spec = ZolixSpectrometer(raw, device_id=7)
+
+    with pytest.raises(DeviceError, match="grating readback mismatch"):
+        spec.set_grating(2)
 
 
 @pytest.mark.parametrize(

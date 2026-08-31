@@ -15,6 +15,12 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest>=8.0",
+  "httpx2>=0.1",
+]
+# FastAPI backend (src/lab_auto/api). Install on any machine that runs scripts/start_api.*
+api = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.29",
 ]
 # Pillow-backed imaging: nncam wafer capture (lab_auto.devices.nncam_camera) and
 # decoding the delivered recognition masks (lab_auto.vision.recognition). Both
@@ -32,3 +38,4 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+testpaths = ["tests"]

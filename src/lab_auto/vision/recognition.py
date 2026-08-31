@@ -43,13 +43,14 @@ def load_mask(path, *, threshold: int = 127):
 
     # A half-written file (the recognition machine still writing it) decodes to a
     # truncated/corrupt image — Pillow raises OSError (UnidentifiedImageError is a
-    # subclass) here, on convert()/getdata() which force the pixels to load.
+    # subclass) here, on convert()/tobytes() which force the pixels to load.
     # ponytail: the real fix is an atomic handoff (producer writes *.tmp then
     # renames); until that contract exists, fail loud as ConfigError, don't crash.
     try:
-        img = Image.open(path).convert("L")  # 8-bit grayscale; handles 0/255 masks
-        width, _ = img.size
-        pixels = list(img.getdata())
+        with Image.open(path) as source:
+            img = source.convert("L")  # 8-bit grayscale; handles 0/255 masks
+            width, _ = img.size
+            pixels = img.tobytes()
     except OSError as exc:
         raise ConfigError(f"recognition mask is unreadable/corrupt (still being written?): {path}") from exc
     # ponytail: full-res mask -> nested list -> pure-Python flood fill in

@@ -21,6 +21,7 @@ from lab_auto.devices.raw.zolix_ctypes import (
 from lab_auto.devices.waynelabs_stage import WAYNELABS_SERIAL_READ_TIMEOUT_S, PositionLedger, WaynelabsStage
 from lab_auto.devices.zolix_spectrometer import ZolixSpectrometer
 from lab_auto.errors import DeviceError
+from lab_auto.runtime import RuntimeMode
 from lab_auto.workflow.raman import RamanWorkflow
 from lab_auto.workflow.tray_scan import TrayScanWorkflow
 
@@ -39,11 +40,16 @@ class RamanPointMeasurer:
     def __init__(self, raman: "RamanWorkflow"):
         self.raman = raman
 
-    def measure_point(self, *, point_id, x_um, y_um, role, repeat, require_confirmation):
+    def measure_point(
+        self, *, point_id, x_um, y_um, role, repeat, require_confirmation, should_cancel=None
+    ):
         import csv
         from types import SimpleNamespace
 
-        run_dir = self.raman.run_single_point(require_confirmation=require_confirmation)
+        run_dir = self.raman.run_single_point(
+            require_confirmation=require_confirmation,
+            should_cancel=should_cancel,
+        )
         intensities: list[float] = []
         with (run_dir / "raw.csv").open(encoding="utf-8") as handle:
             for row in csv.DictReader(handle):
@@ -79,14 +85,15 @@ class DeviceFactory:
     def run_doctor(self, devices_config: DevicesConfig) -> dict:
         zolix_dll = devices_config.spectrometer.dll_path
         dfield_dll = devices_config.camera.dll_path
+        probe_hardware = devices_config.runtime.mode is RuntimeMode.REAL
         return {
             "python_64bit": platform.architecture()[0] == "64bit",
             "stage_port": devices_config.stage.port,
             "zolix_dll_exists": _path_exists(zolix_dll),
             "zolix_ftd2xx_exists": _path_exists(zolix_dll.parent / "ftd2xx.dll"),
-            "zolix_loadable": self._can_load_zolix(zolix_dll) if _path_exists(zolix_dll) else False,
+            "zolix_loadable": self._can_load_zolix(zolix_dll) if probe_hardware and _path_exists(zolix_dll) else False,
             "dfield_dll_exists": _path_exists(dfield_dll),
-            "dfield_loadable": self._can_load_dfield(dfield_dll) if _path_exists(dfield_dll) else False,
+            "dfield_loadable": self._can_load_dfield(dfield_dll) if probe_hardware and _path_exists(dfield_dll) else False,
         }
 
     def run_scan(self, devices_config: DevicesConfig) -> dict:
@@ -98,7 +105,7 @@ class DeviceFactory:
         except ImportError:
             serial_ports = []
         waynelabs = {"configured_port": devices_config.stage.port, "device": None}
-        if devices_config.stage.port in serial_ports:
+        if devices_config.runtime.mode is RuntimeMode.REAL and devices_config.stage.port in serial_ports:
             stage = None
             try:
                 stage = self.create_stage(devices_config)
@@ -109,7 +116,7 @@ class DeviceFactory:
                 if stage is not None:
                     stage.close()
         zolix_devices: list[str] = []
-        if _path_exists(devices_config.spectrometer.dll_path):
+        if devices_config.runtime.mode is RuntimeMode.REAL and _path_exists(devices_config.spectrometer.dll_path):
             try:
                 loaded = load_zolix_library(devices_config.spectrometer.dll_path)
                 if has_required_zolix_exports(loaded):
@@ -125,7 +132,7 @@ class DeviceFactory:
             "configured_stage_port": devices_config.stage.port,
             "waynelabs": waynelabs,
             "zolix_devices": zolix_devices,
-            "dfield_available": self._can_load_dfield(devices_config.camera.dll_path) if _path_exists(devices_config.camera.dll_path) else False,
+            "dfield_available": self._can_load_dfield(devices_config.camera.dll_path) if devices_config.runtime.mode is RuntimeMode.REAL and _path_exists(devices_config.camera.dll_path) else False,
         }
 
     def run_status(self, devices_config: DevicesConfig) -> dict:
@@ -178,7 +185,7 @@ class DeviceFactory:
         except (OSError, AttributeError) as exc:
             raise DeviceError(f"failed to create DField camera: {exc}") from exc
 
-    def create_light(self, devices_config: DevicesConfig):
+    def create_light(self, devices_config: DevicesConfig, *, initial_all_off: bool = True):
         light_config = devices_config.light
         if light_config.type == "manual":
             if not light_config.manual_light_control:
@@ -187,7 +194,17 @@ class DeviceFactory:
         if light_config.type == "pwm_modbus":
             validate_pwm_light_config(light_config)
             transport = self._open_pwm_transport(light_config)
-            return PwmModbusLight(light_config, transport=transport, dry_run=False)
+            light = PwmModbusLight(light_config, transport=transport, dry_run=False)
+            if initial_all_off:
+                # Power-on safety: a crash may have left a channel (possibly the
+                # laser) energized. Force every channel off with read-back before
+                # handing the device out. Read-only status paths pass False.
+                try:
+                    light.safety_reset()
+                except Exception:
+                    light.close(all_off=False)  # already tried off; just drop the port
+                    raise
+            return light
         raise DeviceError(f"unsupported light type: {light_config.type}")
 
     def _open_pwm_transport(self, light_config):
@@ -217,6 +234,9 @@ class DeviceFactory:
                 "real tray scan requires a recognition mask provider "
                 "(camera capture + sample recognition); none is wired yet"
             )
+        RamanWorkflow.dry_run(
+            workflow_config_from_tray_scan(scan_config)
+        ).validate_single_point_config()
         light = self.create_light(devices_config)
         stage = None
         spectrometer = None
@@ -234,6 +254,7 @@ class DeviceFactory:
             raise
 
     def create_single_point_workflow(self, workflow_config: WorkflowConfig, devices_config: DevicesConfig):
+        RamanWorkflow.dry_run(workflow_config).validate_single_point_config()
         light = self.create_light(devices_config)
         stage = None
         spectrometer = None

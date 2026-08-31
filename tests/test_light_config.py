@@ -94,6 +94,33 @@ def test_required_over_max_rejected(tmp_path):
         load_devices_config(_write(tmp_path, _pwm_with(required_output_voltage_v=5.0, max_output_voltage_v=4.0)))
 
 
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"max_output_voltage_v": 0},
+        {"max_output_voltage_v": -1},
+        {"required_output_voltage_v": 0},
+        {"required_output_voltage_v": -1},
+    ],
+)
+def test_non_positive_voltage_rejected(tmp_path, overrides):
+    with pytest.raises(ConfigError, match="positive"):
+        load_devices_config(_write(tmp_path, _pwm_with(**overrides)))
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"max_output_voltage_v": 4.96, "required_output_voltage_v": 4.9},
+        {"required_output_voltage_v": 4.96},
+        {"baudrate": 0},
+    ],
+)
+def test_unrepresentable_voltage_or_baudrate_rejected(tmp_path, overrides):
+    with pytest.raises(ConfigError):
+        load_devices_config(_write(tmp_path, _pwm_with(**overrides)))
+
+
 def test_missing_laser_channel_rejected(tmp_path):
     light = copy.deepcopy(PWM_LIGHT)
     del light["channels"]["laser"]
@@ -122,10 +149,24 @@ def test_non_positive_frequency_rejected(tmp_path):
         load_devices_config(_write(tmp_path, light))
 
 
+def test_frequency_larger_than_controller_register_rejected(tmp_path):
+    light = copy.deepcopy(PWM_LIGHT)
+    light["channels"]["laser"]["frequency_hz"] = 0x100000000
+    with pytest.raises(ConfigError, match="4294967295"):
+        load_devices_config(_write(tmp_path, light))
+
+
 def test_duty_out_of_range_rejected(tmp_path):
     light = copy.deepcopy(PWM_LIGHT)
     light["channels"]["laser"]["duty_percent"] = 150.0
     with pytest.raises(ConfigError):
+        load_devices_config(_write(tmp_path, light))
+
+
+def test_duty_must_match_controller_resolution(tmp_path):
+    light = copy.deepcopy(PWM_LIGHT)
+    light["channels"]["laser"]["duty_percent"] = 5.05
+    with pytest.raises(ConfigError, match="0.1%"):
         load_devices_config(_write(tmp_path, light))
 
 
