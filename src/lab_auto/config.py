@@ -46,7 +46,6 @@ class PwmChannel:
     channel: int
     frequency_hz: int
     duty_percent: float
-    default_off_required: bool
 
 
 @dataclass(frozen=True)
@@ -83,6 +82,8 @@ class OpticsConfig:
     grating: int
     center_wavelength_nm: float
     slit_width_um: int
+    excitation_wavelength_nm: float | None = None
+    laser_power_mw: float | None = None
 
 
 @dataclass(frozen=True)
@@ -97,7 +98,6 @@ class AcquisitionConfig:
 @dataclass(frozen=True)
 class OutputConfig:
     directory: Path
-    formats: list[str]
 
 
 @dataclass(frozen=True)
@@ -207,29 +207,11 @@ def _finite_float(value: Any, *, field: str) -> float:
 
 
 def _finite_int(value: Any, *, field: str) -> int:
-    if isinstance(value, bool):
-        raise ConfigError(f"{field} must be an integer")
-    if isinstance(value, int):
+    if isinstance(value, int) and not isinstance(value, bool):
         return value
-    if isinstance(value, float):
-        if not math.isfinite(value) or not value.is_integer():
-            raise ConfigError(f"{field} must be an integer")
+    if isinstance(value, float) and value.is_integer():
         return int(value)
-    if isinstance(value, str):
-        text = value.strip()
-        if not text or text[0] in "+-" and len(text) == 1:
-            raise ConfigError(f"{field} must be an integer")
-        digits = text[1:] if text[0] in "+-" else text
-        if not digits.isdigit():
-            raise ConfigError(f"{field} must be an integer")
-        try:
-            return int(text)
-        except ValueError as exc:
-            raise ConfigError(f"{field} must be an integer") from exc
-    number = _finite_float(value, field=field)
-    if not number.is_integer():
-        raise ConfigError(f"{field} must be an integer")
-    return int(number)
+    raise ConfigError(f"{field} must be an integer")
 
 
 _REQUIRED_AXES = ("x", "y")
@@ -302,7 +284,6 @@ def _parse_pwm_channel(name: str, value: Any) -> PwmChannel:
         channel=_finite_int(value["channel"], field=f"channels.{name}.channel"),
         frequency_hz=_finite_int(value["frequency_hz"], field=f"channels.{name}.frequency_hz"),
         duty_percent=_finite_float(value["duty_percent"], field=f"channels.{name}.duty_percent"),
-        default_off_required=_as_bool(value.get("default_off_required", True), field=f"channels.{name}.default_off_required"),
     )
 
 
@@ -435,12 +416,19 @@ def _parse_sample(sample: Any) -> SampleConfig:
 
 
 def _parse_optics(optics: Any) -> OpticsConfig:
+    measured = {}
+    for field in ("excitation_wavelength_nm", "laser_power_mw"):
+        value = optics.get(field)
+        measured[field] = _finite_float(value, field=field) if value is not None else None
+        if measured[field] is not None and measured[field] <= 0:
+            raise ConfigError(f"{field} must be positive when supplied")
     return OpticsConfig(
         entrance_port=str(optics["entrance_port"]),
         exit_port=str(optics["exit_port"]),
         grating=_finite_int(optics["grating"], field="grating"),
         center_wavelength_nm=_finite_float(optics["center_wavelength_nm"], field="center_wavelength_nm"),
         slit_width_um=_finite_int(optics["slit_width_um"], field="slit_width_um"),
+        **measured,
     )
 
 
@@ -455,16 +443,7 @@ def _parse_acquisition(acquisition: Any) -> AcquisitionConfig:
 
 
 def _parse_output(output: Any) -> OutputConfig:
-    formats = output["formats"]
-    if not isinstance(formats, list):
-        raise ConfigError("output.formats must be a list")
-    normalized = [str(item).lower() for item in formats]
-    if len(normalized) != 2 or set(normalized) != {"csv", "json"}:
-        raise ConfigError("output.formats must contain exactly [csv, json]; both workflow outputs are required")
-    return OutputConfig(
-        directory=Path(output["directory"]),
-        formats=normalized,
-    )
+    return OutputConfig(directory=Path(output["directory"]))
 
 
 def load_workflow_config(path: str | Path) -> WorkflowConfig:

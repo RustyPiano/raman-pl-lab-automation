@@ -1,25 +1,32 @@
 """Task queue for executing workflow jobs sequentially."""
 import asyncio
+import json
 import logging
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from lab_auto.api.models import JobProgress, JobStatus
 from lab_auto.api.websocket import manager
-from lab_auto.config import load_workflow_and_devices, validate_sample_id
+from lab_auto.config import load_workflow_and_devices
 from lab_auto.devices.factory import DeviceFactory
-from lab_auto.errors import ConfigError, DeviceError, SafetyError, WorkflowCancelled
+from lab_auto.devices.light import PwmModbusLight
+from lab_auto.errors import ConfigError, HardwareBusyError, LabAutomationError, WorkflowCancelled
+from lab_auto.storage import write_json
 from lab_auto.workflow.raman import RamanWorkflow, read_single_point_result
 
 _TERMINAL_STATES = ("completed", "failed", "stopped")
 _MAX_JOB_HISTORY = 100
 
 logger = logging.getLogger(__name__)
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 class TaskQueue:
@@ -46,10 +53,53 @@ class TaskQueue:
         self._active_devices_path: Path | None = None
         self._last_devices_path: Path | None = None
         self._active_light: object | None = None
+        self._device_operations: set[asyncio.Future] = set()
+        self._state_path: Path | None = None
+
+    def restore_jobs(self, path: Path) -> None:
+        """Recover records, never replay hardware commands after a restart."""
+        self._state_path = path
+        self._jobs = {}
+        self._cancel_events = {}
+        self._last_devices_path = None
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            jobs = [JobStatus.model_validate(item) for item in data["jobs"]]
+            last_devices = data.get("last_devices_path")
+            last_devices = Path(last_devices) if last_devices is not None else None
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise ConfigError(f"Cannot recover task records from {path}: {exc}") from exc
+        self._jobs = {job.id: job for job in jobs}
+        self._cancel_events = {job.id: threading.Event() for job in jobs}
+        self._last_devices_path = last_devices
+        for job in jobs:
+            if job.status not in _TERMINAL_STATES:
+                job.status = "failed"
+                job.error = "Server restarted before completion; hardware state must be checked before a new run"
+                job.completed_at = _now()
+        self._save_jobs()
+
+    def _save_jobs(self) -> None:
+        if self._state_path is not None:
+            write_json(self._state_path, {
+                "last_devices_path": self._last_devices_path,
+                "jobs": [job.model_dump(mode="json") for job in self._jobs.values()],
+            })
+
+    def _save_cancelled_jobs(self) -> None:
+        # Emergency OFF has already been dispatched before this callback runs.
+        try:
+            self._save_jobs()
+        except OSError:
+            logger.exception("Could not persist cancellation; hardware cancellation is still active")
 
     def start(self):
         """Start the worker task."""
         if self._worker_task is None or self._worker_task.done():
+            if self._executor._shutdown:
+                self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="hw-worker")
             self._worker_task = asyncio.create_task(self._worker())
             logger.info("Task queue worker started")
 
@@ -84,9 +134,10 @@ class TaskQueue:
             type=job_type,
             status="pending",
             progress=JobProgress(),
-            created_at=datetime.now(timezone.utc).isoformat(),
+            created_at=_now(),
         )
         self._cancel_events[job_id] = threading.Event()
+        self._save_jobs()
         logger.info(f"Created job {job_id} of type {job_type}")
         return job_id
 
@@ -98,8 +149,8 @@ class TaskQueue:
             )
             if oldest_terminal is None:
                 return
-            self._jobs.pop(oldest_terminal, None)
-            self._cancel_events.pop(oldest_terminal, None)
+            self._jobs.pop(oldest_terminal)
+            self._cancel_events.pop(oldest_terminal)
 
     def get_job(self, job_id: str) -> JobStatus | None:
         """Get job status by ID."""
@@ -120,13 +171,11 @@ class TaskQueue:
         operator: str | None = None,
         subtract_background: bool | None = None,
     ):
-        """Submit a single-point measurement job."""
-        if mode == "real" and not confirm_real:
-            raise ConfigError("Real mode requires confirm_real=true")
-
+        """Queue a single-point measurement already validated by the router."""
+        self._jobs[job_id].mode = mode
+        self._save_jobs()
         await self._queue.put({
             "job_id": job_id,
-            "type": "single_point",
             "config_path": config_path,
             "devices_path": devices_path,
             "mode": mode,
@@ -137,78 +186,47 @@ class TaskQueue:
         })
         logger.info(f"Submitted single-point job {job_id} to queue")
 
-    async def stop_job(self, job_id: str) -> bool:
-        """Request a job to stop.
+    def _signal_stop(self, job_id: str, running_message: str) -> dict[str, Any]:
+        """Raise the job's cancel signal and return the status message to publish.
 
         A ``pending`` job is stopped immediately (the worker skips it on dequeue).
-        A ``running``/``stopping`` job has its cancellation signal raised and moves
-        to ``stopping``; it is only reported ``stopped`` once the workflow actually
-        halts at a checkpoint (honest semantics — the laser may still be settling).
+        A ``running``/``stopping`` job moves to ``stopping``; it is only reported
+        ``stopped`` once the workflow actually halts at a checkpoint (honest
+        semantics — the laser may still be settling).
         """
-        job = self._jobs.get(job_id)
-        if not job:
-            return False
-        if job.status in _TERMINAL_STATES:
-            return False
-
-        event = self._cancel_events.get(job_id)
-        if event is not None:
-            event.set()
-
+        job = self._jobs[job_id]
+        self._cancel_events[job_id].set()
         if job.status == "pending":
             job.status = "stopped"
-            job.completed_at = datetime.now(timezone.utc).isoformat()
-            await manager.broadcast(job_id, {
-                "type": "status",
-                "status": "stopped",
-                "message": "Job stopped before it started running",
-            })
-            logger.info(f"Pending job {job_id} marked as stopped")
-            return True
+            job.completed_at = _now()
+            message = "任务开始前已停止"
+        else:
+            job.status = "stopping"
+            message = running_message
+        return {"type": "status", "status": job.status, "message": message}
 
-        # Running (or already stopping): signal cancellation, don't claim it stopped
-        # yet — the worker flips to 'stopped' when the workflow unwinds.
-        job.status = "stopping"
-        await manager.broadcast(job_id, {
-            "type": "status",
-            "status": "stopping",
-            "message": "Stop requested; waiting for the workflow to halt safely",
-        })
-        logger.info(f"Job {job_id} stop requested; marked as stopping")
+    async def stop_job(self, job_id: str) -> bool:
+        """Request a job to stop; False if it is unknown or already finished."""
+        job = self._jobs.get(job_id)
+        if job is None or job.status in _TERMINAL_STATES:
+            return False
+        message = self._signal_stop(job_id, "已请求停止，关闭激光后结束")
+        self._save_jobs()
+        await manager.broadcast(job_id, message)
+        logger.info(f"Job {job_id} stop requested; now {job.status}")
         return True
 
     async def cancel_all(self) -> list[str]:
         """Signal cancellation for every unfinished job; return affected job ids.
 
-        Sets the cancellation event on all non-terminal jobs and marks ``pending``
-        jobs ``stopped`` directly (they never start). Running jobs move to
-        ``stopping`` and stop cooperatively at their next checkpoint. Every state
-        change is broadcast to connected clients.
+        Notifications are fire-and-forget and persistence is deferred so neither
+        can delay the emergency light-off that follows.
         """
-        affected: list[str] = []
-        broadcasts = []
-        for job_id, job in self._jobs.items():
-            if job.status in _TERMINAL_STATES:
-                continue
-            event = self._cancel_events.get(job_id)
-            if event is not None:
-                event.set()
-            if job.status == "pending":
-                job.status = "stopped"
-                job.completed_at = datetime.now(timezone.utc).isoformat()
-                message = "Job stopped before it started running"
-            else:
-                job.status = "stopping"
-                message = "Emergency stop requested; waiting for the workflow to halt safely"
-            broadcasts.append(manager.broadcast(job_id, {
-                "type": "status",
-                "status": job.status,
-                "message": message,
-            }))
-            affected.append(job_id)
-        if broadcasts:
-            await asyncio.gather(*broadcasts)
+        affected = [job_id for job_id, job in self._jobs.items() if job.status not in _TERMINAL_STATES]
+        for job_id in affected:
+            manager.notify(job_id, self._signal_stop(job_id, "急停：关闭激光后结束"))
         if affected:
+            asyncio.get_running_loop().call_soon(self._save_cancelled_jobs)
             logger.info(f"cancel_all signalled {len(affected)} job(s): {affected}")
         return affected
 
@@ -218,136 +236,104 @@ class TaskQueue:
         Device endpoints (light status/off, scan) use this to avoid opening a
         second connection on the same serial port a running job is using.
         """
-        return self._active_job_id is not None
+        return self._active_job_id is not None or any(not future.done() for future in self._device_operations)
+
+    async def run_device_operation(self, fn, *, require_idle: bool = True):
+        """Share the workflow executor; timed-out HTTP callers do not release hardware."""
+        if require_idle and self.is_hardware_busy():
+            raise HardwareBusyError("任务或设备操作正在使用硬件，请稍后重试")
+        future = asyncio.get_running_loop().run_in_executor(self._executor, fn)
+        self._device_operations.add(future)
+        future.add_done_callback(self._device_operation_done)
+        return await asyncio.shield(future)
+
+    def _device_operation_done(self, future) -> None:
+        self._device_operations.discard(future)
+        if not future.cancelled() and future.exception() is not None:
+            logger.error("Device operation failed: %s", future.exception())
 
     def safety_devices_path(self) -> Path | None:
         """Actual devices config for the active or most recent hardware job."""
         return self._active_devices_path or self._last_devices_path
 
     def force_active_light_off(self) -> bool:
-        """Use the active workflow's already-open light handle for emergency OFF."""
+        """Use the active workflow's already-open light handle for emergency OFF.
+
+        Only a PWM light can be switched off by software; a manual light (or no
+        active job) returns False so the caller falls back to the configured light.
+        """
         light = self._active_light
-        reset = getattr(light, "safety_reset", None)
-        if reset is None:
+        if not isinstance(light, PwmModbusLight):
             return False
-        reset()
+        light.emergency_off()
         return True
 
     async def _worker(self):
         """Background worker that processes jobs sequentially.
 
-        Every dequeued task calls ``task_done()`` exactly once (task/finally), and
-        any unexpected error still marks the job failed instead of leaving it stuck
-        in ``running`` — no job silently vanishes.
+        Every dequeued task calls ``task_done()`` exactly once, and an error
+        outside the per-job handler still fails the job instead of leaving it
+        stuck in ``running``.
         """
         logger.info("Task queue worker running")
         while True:
-            try:
-                task = await self._queue.get()
-            except asyncio.CancelledError:
-                logger.info("Worker task cancelled")
-                break
+            task = await self._queue.get()
             try:
                 await self._process_task(task)
-            except asyncio.CancelledError:
-                logger.info("Worker task cancelled")
-                break
             except Exception as e:
-                # Top-level guard: a bug outside the per-job handler must still fail
-                # the job (not leave it 'running' forever) and be reported.
-                await self._fail_job(task.get("job_id"), f"Unexpected error: {str(e)}")
                 logger.exception(f"Worker error processing task: {e}")
+                await self._fail_job(task["job_id"], f"Unexpected error: {e}")
             finally:
                 self._queue.task_done()
 
-    async def _fail_job(self, job_id: str | None, error: str) -> None:
+    async def _fail_job(self, job_id: str, error: str) -> None:
         """Mark a job failed and broadcast the error, if it isn't already terminal."""
-        job = self._jobs.get(job_id) if job_id else None
+        job = self._jobs.get(job_id)
         if job is None or job.status in _TERMINAL_STATES:
             return
         job.status = "failed"
         job.error = error
-        job.completed_at = datetime.now(timezone.utc).isoformat()
+        job.completed_at = _now()
+        self._save_jobs()
         await manager.broadcast(job_id, {"type": "error", "error": error})
 
     async def _process_task(self, task: dict[str, Any]) -> None:
         """Run a single dequeued task through its lifecycle."""
         job_id = task["job_id"]
         job = self._jobs.get(job_id)
-        if not job:
-            logger.error(f"Job {job_id} not found")
+        # A job stopped while pending may already be pruned or marked stopped.
+        if job is None or job.status == "stopped":
             return
-
-        # Skip if the job was stopped while still pending in the queue.
-        if job.status == "stopped":
-            logger.info(f"Skipping stopped job {job_id}")
-            return
-
-        cancel_event = self._cancel_events.get(job_id)
 
         # Track which job the hardware executor is working on so device
         # endpoints can detect a busy port instead of racing it (see
-        # is_hardware_busy). Set for the whole processing lifetime, cleared
-        # unconditionally in `finally` regardless of which branch below exits.
+        # is_hardware_busy). Cleared unconditionally in `finally`.
         self._active_job_id = job_id
         try:
-
-            # Update to running
             job.status = "running"
-            job.started_at = datetime.now(timezone.utc).isoformat()
+            job.started_at = _now()
+            job.progress = JobProgress(current_step="executing", percentage=0.0, message="正在测量")
+            self._save_jobs()
             await manager.broadcast(job_id, {
                 "type": "status",
                 "status": "running",
+                "message": job.progress.message,
+                "progress": job.progress.model_dump(),
             })
 
             try:
-                if task["type"] == "single_point":
-                    await self._execute_single_point(
-                        job_id,
-                        task["config_path"],
-                        task["devices_path"],
-                        task["mode"],
-                        task["confirm_real"],
-                        cancel_event,
-                        task.get("sample_id"),
-                        task.get("operator"),
-                        task.get("subtract_background"),
-                    )
-                else:
-                    raise ValueError(f"Unknown job type: {task['type']}")
-
+                await self._execute_single_point(job_id, task)
             except WorkflowCancelled:
                 # Cooperative stop reached a checkpoint and unwound cleanly.
                 job.status = "stopped"
-                job.completed_at = datetime.now(timezone.utc).isoformat()
-                await manager.broadcast(job_id, {
-                    "type": "status",
-                    "status": "stopped",
-                    "message": "Job stopped",
-                })
+                job.completed_at = _now()
+                self._save_jobs()
+                await manager.broadcast(job_id, {"type": "status", "status": "stopped", "message": "任务已停止"})
                 logger.info(f"Job {job_id} stopped by cancellation")
                 return
-
-            except (ConfigError, DeviceError, SafetyError) as e:
-                job.status = "failed"
-                job.error = str(e)
-                job.completed_at = datetime.now(timezone.utc).isoformat()
-                await manager.broadcast(job_id, {
-                    "type": "error",
-                    "error": str(e),
-                })
-                logger.error(f"Job {job_id} failed: {e}")
-                return
-
             except Exception as e:
-                job.status = "failed"
-                job.error = f"Unexpected error: {str(e)}"
-                job.completed_at = datetime.now(timezone.utc).isoformat()
-                await manager.broadcast(job_id, {
-                    "type": "error",
-                    "error": f"Unexpected error: {str(e)}",
-                })
-                logger.exception(f"Job {job_id} failed with unexpected error")
+                logger.exception(f"Job {job_id} failed")
+                await self._fail_job(job_id, str(e) if isinstance(e, LabAutomationError) else f"Unexpected error: {e}")
                 return
 
             # Natural completion. Only write a terminal state if we're still mid-flight
@@ -355,175 +341,71 @@ class TaskQueue:
             if job.status not in ("running", "stopping"):
                 return
             job.status = "completed"
-            job.completed_at = datetime.now(timezone.utc).isoformat()
-            # If a stop was requested but the workflow finished first, say so honestly.
-            message = (
-                "completed before stop request took effect"
-                if cancel_event is not None and cancel_event.is_set()
-                else None
-            )
+            job.completed_at = _now()
+            # If a stop was requested but the workflow finished first, say so.
+            message = "停止请求生效前任务已完成" if self._cancel_events[job_id].is_set() else "测量完成"
+            job.progress = JobProgress(current_step="completed", percentage=100.0, message=message)
+            self._save_jobs()
             await manager.broadcast(job_id, {
                 "type": "status",
                 "status": "completed",
                 "message": message,
+                "progress": job.progress.model_dump(),
                 "result": job.result,
             })
             logger.info(f"Job {job_id} completed successfully")
         finally:
             self._active_job_id = None
 
-    async def _execute_single_point(
-        self,
-        job_id: str,
-        config_path: str,
-        devices_path: str | None,
-        mode: str,
-        confirm_real: bool,
-        cancel_event: threading.Event | None = None,
-        sample_id: str | None = None,
-        operator: str | None = None,
-        subtract_background: bool | None = None,
-    ):
-        """Execute a single-point measurement in a thread pool.
-
-        Runs blocking hardware operations in the single-threaded executor
-        to maintain hardware safety without blocking the async event loop.
-        """
-        job = self._jobs[job_id]
-
-        # Progress callback
-        async def broadcast_progress(step: str, completed: int, total: int, message: str | None = None):
-            job.progress.current_step = step
-            job.progress.completed_steps = completed
-            job.progress.total_steps = total
-            job.progress.message = message
-            if total > 0:
-                job.progress.percentage = (completed / total) * 100.0
-
-            await manager.broadcast(job_id, {
-                "type": "progress",
-                "step": step,
-                "completed": completed,
-                "total": total,
-                "message": message,
-                "percentage": job.progress.percentage,
-            })
-
-        # Send initial progress
-        await broadcast_progress("initializing", 0, 10, "Loading configuration")
-
-        # Run in thread pool to avoid blocking async loop
-        # Use the single-threaded executor to ensure sequential hardware access
+    async def _execute_single_point(self, job_id: str, task: dict[str, Any]):
+        """Run the blocking measurement on the single hardware executor."""
+        if task["mode"] == "real" and task["devices_path"] is not None:
+            self._last_devices_path = Path(task["devices_path"]).resolve()
+            self._save_jobs()
         loop = asyncio.get_running_loop()
-
-        await broadcast_progress("executing", 2, 10, "Running single-point measurement")
-
-        result = await loop.run_in_executor(
-            self._executor,  # Use our single-threaded executor
-            self._run_single_point_sync,
-            config_path,
-            devices_path,
-            mode,
-            confirm_real,
-            job_id,
-            cancel_event,
-            sample_id,
-            operator,
-            subtract_background,
+        self._jobs[job_id].result = await loop.run_in_executor(
+            self._executor, self._run_single_point_sync, task, self._cancel_events[job_id]
         )
 
-        await broadcast_progress("saving", 9, 10, "Saving results")
-
-        job.result = result
-        await broadcast_progress("completed", 10, 10, "Measurement completed")
-
-    def _run_single_point_sync(
-        self,
-        config_path: str,
-        devices_path: str | None,
-        mode: str,
-        confirm_real: bool,
-        job_id: str,
-        cancel_event: threading.Event | None = None,
-        sample_id: str | None = None,
-        operator: str | None = None,
-        subtract_background: bool | None = None,
-    ) -> dict[str, Any]:
-        """Synchronous execution of single-point workflow.
-
-        This runs in the single-threaded executor, ensuring hardware operations
-        execute sequentially without blocking the async event loop.
-
-        Note: This method cannot use asyncio.run() as it may be called from
-        within an async context. Progress updates are handled by the caller.
-        """
-        # Defense-in-depth: re-reject the same dangerous combinations the router
-        # guards, so a caller bypassing the router can't queue an unsafe run.
-        if mode == "real" and not confirm_real:
-            raise ConfigError("Real mode requires confirm_real=true")
-        if confirm_real and mode != "real":
-            raise ConfigError("confirm_real=true is only valid in real mode")
-
-        # Load configs
+    def _run_single_point_sync(self, task: dict[str, Any], cancel_event: threading.Event) -> dict[str, Any]:
+        """Synchronous single-point workflow, executed on the hardware thread."""
+        mode = task["mode"]
         workflow_config, devices_config = load_workflow_and_devices(
-            config_path,
-            devices_override=devices_path,
+            task["config_path"],
+            devices_override=task["devices_path"],
         )
-        if mode == "real" and getattr(getattr(devices_config, "light", None), "type", None) == "manual":
-            raise ConfigError(
-                "Web API real mode requires a pwm_modbus light source; a manual light needs "
-                "terminal confirmation which would hang the server"
-            )
-        actual_devices_path = Path(devices_path or workflow_config.devices_config).resolve()
-        self._last_devices_path = actual_devices_path
+        actual_devices_path = Path(task["devices_path"] or workflow_config.devices_config).resolve()
+        if mode == "real":
+            self._last_devices_path = actual_devices_path
 
-        if sample_id is not None:
-            sample_id = validate_sample_id(sample_id.strip())
+        sample = workflow_config.sample
+        if task.get("sample_id") is not None:
+            sample = replace(sample, id=task["sample_id"])
+        if task.get("operator") is not None:
+            sample = replace(sample, operator=task["operator"])
+        workflow_config = replace(workflow_config, sample=sample)
+        if task.get("subtract_background") is not None:
             workflow_config = replace(
                 workflow_config,
-                sample=replace(workflow_config.sample, id=sample_id),
-            )
-        if operator is not None:
-            operator = operator.strip()
-            if not operator:
-                raise ConfigError("operator override cannot be empty")
-            workflow_config = replace(
-                workflow_config,
-                sample=replace(workflow_config.sample, operator=operator),
-            )
-        if subtract_background is not None:
-            workflow_config = replace(
-                workflow_config,
-                acquisition=replace(
-                    workflow_config.acquisition,
-                    subtract_background=subtract_background,
-                ),
+                acquisition=replace(workflow_config.acquisition, subtract_background=task["subtract_background"]),
             )
 
-        should_cancel = (lambda: cancel_event.is_set()) if cancel_event is not None else None
-
-        # Create workflow based on mode
         if mode == "dry_run":
             workflow = RamanWorkflow.dry_run(workflow_config)
         elif mode == "simulated":
             workflow = RamanWorkflow.simulated(workflow_config)
-        elif mode == "real":
-            workflow = self._factory.create_single_point_workflow(
-                workflow_config,
-                devices_config,
-            )
         else:
-            raise ValueError(f"Invalid mode: {mode}")
+            workflow = self._factory.create_single_point_workflow(workflow_config, devices_config)
 
-        self._active_devices_path = actual_devices_path
-        self._active_light = getattr(workflow, "light", None)
+        if mode != "real":
+            workflow.devices_snapshot = asdict(devices_config)
+        self._active_devices_path = actual_devices_path if mode == "real" else None
+        self._active_light = workflow.light
         try:
-            # Execute workflow (blocking hardware operation)
             output_dir = workflow.run_single_point(
-                require_confirmation=confirm_real,
-                should_cancel=should_cancel,
+                require_confirmation=task["confirm_real"],
+                should_cancel=cancel_event.is_set,
             )
-
             return {
                 "output_directory": str(output_dir),
                 "mode": mode,

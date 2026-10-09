@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -84,8 +85,8 @@ def test_real_confirmation_is_passed_to_queue(tmp_path, monkeypatch):
     # pwm_modbus source so the confirmed real request is accepted and forwarded.
     monkeypatch.setattr(
         workflow,
-        "load_workflow_and_devices",
-        lambda *args, **kwargs: (object(), SimpleNamespace(light=SimpleNamespace(type="pwm_modbus"))),
+        "load_devices_config",
+        lambda *args, **kwargs: SimpleNamespace(light=SimpleNamespace(type="pwm_modbus")),
     )
 
     job = asyncio.run(workflow.start_single_point(
@@ -114,11 +115,22 @@ def test_router_rejects_invalid_acquisition_before_queueing(tmp_path, monkeypatc
     monkeypatch.setenv("LAB_AUTO_CONFIG_DIR", str(tmp_path))
     monkeypatch.setattr(workflow, "task_queue", queue)
 
-    with pytest.raises(HTTPException) as exc_info:
+    # ConfigError is mapped to HTTP 400 by the app-level exception handler.
+    with pytest.raises(ConfigError, match="safety cap"):
         asyncio.run(workflow.start_single_point(SinglePointRequest(config_path="single.yaml")))
 
-    assert exc_info.value.status_code == 400
     assert queue.created is False
+
+
+def _task(mode, confirm_real, *, config_path="config.yaml", devices_path=None, **overrides):
+    return {
+        "job_id": "job-1",
+        "config_path": config_path,
+        "devices_path": devices_path,
+        "mode": mode,
+        "confirm_real": confirm_real,
+        **overrides,
+    }
 
 
 def test_queue_passes_real_confirmation_to_workflow(monkeypatch):
@@ -139,19 +151,10 @@ def test_queue_passes_real_confirmation_to_workflow(monkeypatch):
     )
     queue._factory = FactoryStub()
 
-    result = queue._run_single_point_sync("config.yaml", None, "real", True, "job-1")
+    result = queue._run_single_point_sync(_task("real", True), threading.Event())
 
     assert result["mode"] == "real"
     assert real_workflow.calls == [("run_single_point", True), ("close",)]
-
-
-def test_submit_single_point_rejects_unconfirmed_real_mode():
-    queue = TaskQueue()
-
-    with pytest.raises(ConfigError, match="confirm_real"):
-        asyncio.run(queue.submit_single_point("job-1", "config.yaml", None, "real"))
-
-    assert queue._queue.empty()
 
 
 def test_task_queue_uses_one_hardware_worker():
@@ -179,14 +182,16 @@ def test_simulated_result_contains_spectrum_and_applies_overrides(tmp_path):
     queue = TaskQueue()
 
     result = queue._run_single_point_sync(
-        str(workflow_path),
-        str(devices_path),
-        "simulated",
-        False,
-        "job-1",
-        sample_id="override-001",
-        operator="测试员",
-        subtract_background=False,
+        _task(
+            "simulated",
+            False,
+            config_path=str(workflow_path),
+            devices_path=str(devices_path),
+            sample_id="override-001",
+            operator="测试员",
+            subtract_background=False,
+        ),
+        threading.Event(),
     )
 
     assert result["spectrum"]["raw"]
@@ -195,20 +200,13 @@ def test_simulated_result_contains_spectrum_and_applies_overrides(tmp_path):
     assert result["metadata"]["sample_id"] == "override-001"
     assert result["metadata"]["operator"] == "测试员"
     assert queue._active_devices_path is None
-    assert queue.safety_devices_path() == devices_path
-
-
-def test_run_single_point_sync_rejects_unconfirmed_real_mode(monkeypatch):
-    queue = TaskQueue()
-    monkeypatch.setattr(task_queue_module, "load_workflow_and_devices", lambda *args, **kwargs: pytest.fail("loaded config"))
-
-    with pytest.raises(ConfigError, match="confirm_real"):
-        queue._run_single_point_sync("config.yaml", None, "real", False, "job-1")
+    assert queue.safety_devices_path() is None  # simulation must not replace the real safety target
 
 
 class RealWorkflowStub:
     def __init__(self):
         self.calls = []
+        self.light = None
 
     def run_single_point(self, *, require_confirmation, should_cancel=None):
         self.calls.append(("run_single_point", require_confirmation))
@@ -236,6 +234,9 @@ class BroadcastRecorder:
 
     def __init__(self):
         self.messages = []
+
+    def notify(self, job_id, message):
+        self.messages.append((job_id, message))
 
     async def broadcast(self, job_id, message):
         self.messages.append((job_id, message))
@@ -348,7 +349,7 @@ def test_completed_before_stop_took_effect_is_reported_honestly(monkeypatch):
         job = queue.get_job(job_id)
         assert job.status == "completed"
         completed = [m for (_, m) in recorder.messages if m.get("status") == "completed"]
-        assert completed[-1]["message"] == "completed before stop request took effect"
+        assert completed[-1]["message"] == "停止请求生效前任务已完成"
 
     asyncio.run(scenario())
 
@@ -489,8 +490,8 @@ def test_router_rejects_real_mode_manual_light(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(
         workflow,
-        "load_workflow_and_devices",
-        lambda *args, **kwargs: (object(), SimpleNamespace(light=SimpleNamespace(type="manual"))),
+        "load_devices_config",
+        lambda *args, **kwargs: SimpleNamespace(light=SimpleNamespace(type="manual")),
     )
 
     with pytest.raises(HTTPException) as exc_info:
@@ -500,28 +501,6 @@ def test_router_rejects_real_mode_manual_light(tmp_path, monkeypatch):
 
     assert exc_info.value.status_code == 400
     assert "pwm_modbus" in exc_info.value.detail
-
-
-def test_run_single_point_sync_rejects_confirm_real_in_non_real_mode(monkeypatch):
-    queue = TaskQueue()
-    monkeypatch.setattr(
-        task_queue_module, "load_workflow_and_devices",
-        lambda *args, **kwargs: pytest.fail("loaded config"),
-    )
-
-    with pytest.raises(ConfigError, match="confirm_real"):
-        queue._run_single_point_sync("config.yaml", None, "dry_run", True, "job-1")
-
-
-def test_run_single_point_sync_rejects_real_manual_light(monkeypatch):
-    queue = TaskQueue()
-    monkeypatch.setattr(
-        task_queue_module, "load_workflow_and_devices",
-        lambda *args, **kwargs: (object(), SimpleNamespace(light=SimpleNamespace(type="manual"))),
-    )
-
-    with pytest.raises(ConfigError, match="pwm_modbus"):
-        queue._run_single_point_sync("config.yaml", None, "real", True, "job-1")
 
 
 def test_websocket_rejects_unknown_job_before_accepting():

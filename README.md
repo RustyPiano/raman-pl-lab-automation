@@ -1,96 +1,151 @@
-# 实验室 Raman/PL 自动化平台资料仓库
+# 实验室 Raman/PL 自动化平台
 
-本仓库用于沉淀实验室 Raman/PL 自动化项目的原始硬件资料、老师整理的操作流程，以及后续软件开发规格。
+本项目把老师整理的人工 PL/Raman 测量流程（[SOP](docs/lab-sop-pl-mapping-zolix-ocr.md)）改成由程序控制。程序直接调用四类设备：
 
-当前阶段目标是打通自动化瓶颈：优先封装底层硬件控制能力，提供可脚本调用的 Python API 和 CLI，再为后续 AI Agent 实现完全自动化提供稳定、安全、可审计的接口。
+- WayneLabs 电动位移台：串口，移动样品。
+- Zolix 光谱仪：厂家 DLL，设置光栅、中心波长和狭缝。
+- DField-VS-A4 CCD：厂家 DLL，采集光谱。
+- PWM 光源控制器：Modbus RTU 串口，开关激光和白光 LED。
 
-## 目录说明
+使用方式有两种：命令行 `ramanctl` 和浏览器里的 Web 控制台（FastAPI 后端 + React 前端）。代码在 macOS 上用模拟设备开发和测试，真实硬件只在实验室的 Windows 64 位电脑上运行。
 
-- `docs/superpowers/specs/`
-  - 自动化平台规格文档。后续 Agent 开发应优先阅读这里。
-- `自动化主要流程.docx`
-  - 老师整理的 MAPS/WayneLabs 人工操作流程。
-- `Waynelabs SDK Instructions.pdf`
-  - WayneLabs 电动位移台和电动光路组件串口通信说明。
-- `光谱议控制SDK-32&64bit-20250429/`
-  - Zolix 光谱仪/单色仪 SDK、驱动、C++/LabVIEW/Python Demo。
-- `DField-VS-A4-SDK-20250619/`
-  - DField-VS-A4 CCD/相机探测器 SDK 和 Demo。
+当前进度、下一步和已知问题见 [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md)。
 
-## 当前进度
+## 能做什么
 
-### Phase 1 & Phase 2 M1 ✅ 已完成（2026-06-13）
+- **单点测量**：配置光谱仪 → 关激光采背景 → 开激光采样品 → 关激光 → 扣除背景 → 保存 CSV 与元数据。命令行和 Web 都可以运行。
+- **托盘扫描**（只有命令行可以真机运行）：按托盘行列逐个移到每片晶圆中心 → 请外部程序拍照并识别样品位置 → 用像素到位移台的标定矩阵换算坐标 → 对每个样品中心及周围点各测两次，比较两次光谱判断是否烧样。中断后可以从记录文件继续。Web 端只提供不动硬件的预演。
+- **设备诊断与安全**：检查 DLL 和串口、读取光源寄存器、一键关闭全部光源通道、软件急停。
 
-- Phase 1 MVP **代码已完成并合并到 `main`**（commit `36518da`、`caa3429`）：`ramanctl` CLI、dry-run/simulated 模式、WayneLabs/Zolix/DField 适配器、单点 Raman/PL 工作流、安全校验。
-- Phase 2 M1 **真实 PWM 光源后端已完成并合并到 `main`**：Modbus RTU raw 协议、`pwm_modbus` 配置解析、`PwmModbusLight` 读回确认安全序列、real-mode factory dispatch、硬件验收清单。
-- 测试全绿（296 passed），默认 dry-run 单点工作流可输出完整动作序列。
+## 三种运行模式
 
-### Phase A: Web 平台 ✅ 已完成（2026-07-01）
+| 模式 | 用途 | 是否连接硬件 |
+|------|------|------|
+| `dry_run`（默认） | 只打印将要执行的动作序列 | 否 |
+| `simulated` | 用模拟设备完整跑一遍并写出数据文件 | 否 |
+| `real` | 控制真实设备 | 是，命令行必须加 `--real`，Web 必须 `confirm_real=true` |
 
-**现代化 Web 界面 + FastAPI 后端**
+设备配置文件里的 `runtime.mode: real` 不会自动生效，仍需在命令行显式加 `--real`。
 
-- ✅ **后端 (FastAPI)**：REST API + WebSocket 实时推送（评分 94/100，生产级）
-  - 单线程任务队列（硬件安全保障）
-  - Web API 默认 dry-run；real 模式必须显式安全确认
-  - 路径注入防护
-  - 完整的设备、配置、工作流管理 API
-  - 自动生成 Swagger 文档：http://127.0.0.1:8008/docs
+## 代码结构
 
-- ✅ **前端 (React + shadcn/ui)**：用户友好的操作界面（评分 91/100，生产级）
-  - TypeScript 严格模式
-  - 实时进度显示（8 步骤可视化）
-  - 光谱数据图表
-  - real 模式安全确认对话框
-  - 类型安全错误处理
-
-- ✅ **当前验证**：`pytest -q` 517 passed；`npm run lint`、`npm run build` passed
-
-- ✅ **跨平台支持**：macOS + Windows 完全兼容
-  - 提供完整的 Windows 部署文档和脚本
-  - 所有硬件驱动已验证 Windows 兼容性
-
-**文档**：
-- 后端文档：[API_README.md](./API_README.md)
-- Windows 部署：[docs/windows/WINDOWS_SETUP.md](./docs/windows/WINDOWS_SETUP.md)
-- 前端文档：[frontend/README.md](./frontend/README.md)
-
-**快速启动**：
-```bash
-# macOS
-./scripts/start_api.sh       # 后端 http://127.0.0.1:8008
-./scripts/start_frontend.sh  # 前端 http://localhost:5173
-
-# Windows
-scripts\start_api.bat
-scripts\start_frontend.bat
+```mermaid
+flowchart TD
+    raw["devices/raw/：串口协议与 DLL 绑定"] --> adapters["devices/：设备适配器、模拟设备、DeviceFactory"]
+    adapters --> wf["workflow/：单点测量 raman.py、托盘扫描 tray_scan.py"]
+    helpers["scan/、vision/、processing/：托盘几何、标定与识别、背景扣除与烧检"] --> wf
+    wf --> cli["cli.py：ramanctl 命令行"]
+    wf --> api["api/：FastAPI 后端与单线程硬件任务队列"]
+    api --> fe["frontend/：React 控制台"]
 ```
 
-### 待办事项
+| 位置 | 内容 |
+|------|------|
+| `src/lab_auto/config.py` | 读取并校验全部 YAML 配置。参数范围、安全上限都在这里检查一次，下游代码直接使用 |
+| `src/lab_auto/devices/raw/` | `waynelabs_protocol.py`、`pwm_modbus.py` 是串口帧格式；`zolix_ctypes.py`、`dfield_ctypes.py` 是 DLL 函数签名；`native.py` 负责加载 DLL |
+| `src/lab_auto/devices/` | `waynelabs_stage.py`（移动、归零、位置台账）、`light.py`（激光开关与读回确认）、`zolix_spectrometer.py`、`dfield_camera.py`、`simulated.py`（模拟设备）、`factory.py`（按配置创建真实设备） |
+| `src/lab_auto/workflow/` | `raman.py` 单点测量；`tray_scan.py` 托盘扫描与可恢复的 `manifest.json` |
+| `src/lab_auto/api/` | `main.py` 应用入口、统一错误码、启动和关闭时的光源复位；`task_queue.py` 任务队列；`routers/` 各接口 |
+| `frontend/src/` | `views/` 四个页面（单点测量、托盘预演、设备、历史），`stores/workflowStore.ts` 任务状态，`api/client.ts` 接口封装 |
+| `configs/*.example.yaml` | 配置模板。本机配置（`configs/*.yaml`）不入库 |
+| `tests/`、`frontend/tests/` | 后端 pytest 与前端 store 测试，全部使用模拟设备 |
 
-- **真机验收未执行**：Phase 1 硬件验收见 `docs/phase1-hardware-acceptance.md`；Phase 2 M1 PWM 光源硬件验收见 `docs/phase2-hardware-acceptance.md`。两者都需在实验室 Windows 64 位机器上执行。
-- **Phase B Web UI 已完成**：托盘安全预演、设备监控/扫描/全关、历史查询/筛选/光谱/文件下载；真实托盘扫描仍等待识别链路和现场标定
-- **Phase 2 M2 规划**：Mapping 区域扫描工作流 + CLI
+## 快速开始（开发机）
 
-## 开发入口
+需要 Python 3.11+、[uv](https://docs.astral.sh/uv/)、Node.js 20.19+。
 
-第一版可执行规格文档：
+```bash
+uv venv .venv --python 3.12
+uv pip install -e ".[dev,api]"
+.venv/bin/python -m pytest -q                 # 后端测试
+(cd frontend && npm ci && npm test && npm run lint && npm run build)   # 前端测试与构建
 
-- `docs/superpowers/specs/2026-06-04-lab-automation-platform-design.md`
+# 不接硬件试运行
+.venv/bin/ramanctl workflow single --config configs/single_point.example.yaml --simulated --yes
+.venv/bin/ramanctl scan tray --config configs/tray_scan.example.yaml --dry-run
 
-该文档明确了 Phase 1 范围：
+# Web 控制台
+./scripts/start_api.sh        # 后端 http://127.0.0.1:8008，接口文档 /docs
+./scripts/start_frontend.sh   # 前端 http://localhost:5173
+```
 
-- Python 包和 `ramanctl` CLI。
-- dry-run/simulated 模式。
-- WayneLabs 位移台串口封装。
-- Zolix 光谱仪 DLL 封装。
-- DField 相机 DLL 封装。
-- 单点 Raman/PL 测量工作流。
+在实验室 Windows 电脑上部署和填写真机配置见 [docs/lab-setup.md](docs/lab-setup.md)。
 
-真实 PWM 光源控制器接入已作为 Phase 2 M1 完成。Mapping、采集后处理增强、Agent tool schema、daemon/session 模式和厂家 HTTP 光源后端属于后续 Phase 2 里程碑。
+## 命令行 `ramanctl`
 
-## 仓库约定
+所有命令都接受 `--dry-run`、`--simulated`、`--real` 之一，不写时按设备配置的 `runtime.mode`（默认 dry_run）。真机模式下 `stage move/home/trigger` 必须加 `--yes`。光源配置为 `manual` 时，测量流程每次开关激光都在终端等待人工确认。
 
-- `tmp/`、`output/`、`state/`、`logs/` 是生成物或运行时状态，不进入 Git。
-- 厂家 SDK 和原始文档作为项目资料保留在仓库中。
-- 后续实现真实硬件控制时，默认先支持 dry-run，再上机验证。
-- 真实硬件动作必须保留日志、元数据和安全确认。
+```text
+ramanctl devices scan|status|doctor [--config DEVICES]      检查串口、DLL 是否可加载
+ramanctl stage identify|move|home|trigger --config DEVICES  位移台（move: --axis --um --speed；home: --axis --direction --speed）
+ramanctl spec status|init|set --config DEVICES              光谱仪（init: --entrance --exit；set: --grating --wavelength-nm --slit-um）
+ramanctl camera status|temperature|capture --config DEVICES CCD（capture: --mode fvb|image --exposure-ms --out）
+ramanctl workflow single --config SINGLE [--devices-config DEVICES]
+ramanctl scan tray --config TRAY [--devices-config DEVICES] [--recognition-dir DIR --session-id ID]
+```
+
+出错时打印 `error: ...` 并返回退出码 2。
+
+## Web 控制台与 API
+
+前端开发服务器把 `/api` 和 WebSocket 代理到 `127.0.0.1:8008`；执行 `npm run build` 后，后端也会直接托管 `frontend/dist`。
+
+| 接口 | 作用 |
+|------|------|
+| `GET /api/configs?config_type=single_point\|tray` | 列出 `configs/` 下可用的配置 |
+| `POST /api/workflow/single-point` | 提交单点测量，参数为 `config_path`、`mode`、`confirm_real`，可覆盖 `sample_id`、`operator`、`subtract_background` |
+| `GET /api/workflow/jobs`、`GET /api/workflow/jobs/{id}` | 查询任务 |
+| `POST /api/workflow/jobs/{id}/stop` | 停止任务：等待中的任务立即停止；运行中的任务先变为 `stopping`，在下一个检查点关激光后变为 `stopped` |
+| `WS /api/workflow/ws/jobs/{id}` | 推送任务状态（`status` 消息带进度与结果，`error` 消息带错误原因） |
+| `POST /api/workflow/tray/preview` | 托盘扫描预演，不动硬件 |
+| `GET /api/devices/status`、`POST /api/devices/scan` | 设备诊断 |
+| `GET /api/devices/light/status` | 只读光源寄存器，不写任何通道 |
+| `POST /api/devices/light/off` | 关闭全部光源通道并读回确认；有任务运行时先取消任务 |
+| `POST /api/emergency-stop` | 软件急停：取消所有任务并尽力关光源，结果如实写在 `laser_off` 字段 |
+| `GET /api/history`、`GET /api/history/{id}`、`.../files/{name}` | 读取和下载已保存的单点测量 |
+| `GET /api/health` | 健康检查 |
+
+错误码：配置、设备、安全错误返回 400；硬件正在被其他操作使用返回 409；硬件调用超时返回 504；配置文件不存在返回 404。
+
+后端只用一个线程执行所有硬件操作，同一时间只有一个操作能占用硬件。任务记录保存在 `state/api_jobs.json`，服务重启后未完成的任务标记为失败，不会自动重新执行。只能运行一个后端进程，也不能和真机命令行或厂家软件同时控制硬件。
+
+Web 端没有开激光的接口。激光只会在已确认的测量流程中打开。
+
+## 输出文件
+
+单点测量写入 `output.directory`（默认 `output/measurements/<时间>-<样品ID>/`）：
+
+- `raw.csv`：样品光谱（`pixel_index, wavelength_nm, intensity_raw, saturated`）。
+- `background.csv`、`corrected.csv`：开启背景扣除时生成。
+- `metadata.json`：状态（running/completed/failed/stopped）、错误原因、软件版本、配置快照、设备状态、探测器温度、人工记录的激发波长与功率。
+- `run.log`：开始、完成或失败的记录。
+
+托盘扫描在其输出目录写 `manifest.json`，记录每片晶圆、每个样品中心、每个测点的坐标、烧检结果和对应的单点输出目录。用同一配置、同一输出目录和同一 session 重新运行时跳过已完成的点；配置有任何变化都会拒绝续跑。
+
+运行状态：`state/stage_position.json` 是位移台位置台账，`state/api_jobs.json` 是 Web 任务记录。
+
+环境变量：`LAB_AUTO_CONFIG_DIR`（Web 可选配置目录，默认 `configs/`）、`LAB_AUTO_DEVICES_CONFIG`（Web 使用的设备配置，默认 `configs/devices.yaml`，不存在时用 example）、`LAB_AUTO_MEASUREMENTS_DIR`（历史页读取目录）、`LAB_AUTO_JOB_STATE`（任务记录文件）。
+
+## 安全机制
+
+改动下面任何一项之前先读 [CLAUDE.md](CLAUDE.md) 的安全红线。
+
+- **激光**：开激光前读回确认控制器电压寄存器 Reg1 = 50（5.0 V）、其他通道全部关闭、本通道频率和占空比与配置一致，写入后再读回确认已打开。关激光会关闭全部 5 个通道并逐个读回为 0；读回失败时状态变为 `manual_wait`，提示激光可能仍在开启。软件从不写 Reg1。
+- **异常路径**：测量失败或取消时一律先确认关激光；关不掉时报 `SafetyError`。创建光源（只读状态查询除外）、后端启动和正常关闭时都会把全部通道关闭一次。急停后同一个光源对象不能再开激光。
+- **位移台**：协议无法读取绝对位置，软件用 `state/stage_position.json` 记录每轴状态（`unknown` / `homed`）。`unknown` 轴只允许不超过 `max_unknown_move_um` 的小步移动；已归零的轴检查软限位。移动前先写入"移动中"标记，进程中途被杀后该轴恢复为 `unknown`。归零方向必须与配置的 `home_direction` 一致。
+- **参数上限**：单次曝光 ≤ 60 s，帧数 ≤ 1000，曝光 × 帧数 ≤ 60 s（激光持续照射时间上限）；烧检阈值必须大于 0。
+- **托盘扫描**：X/Y 都已归零才能开始；标定必须写明图像宽高，识别图尺寸不一致时拒绝移动；超出软限位的点按配置跳过或中止。
+- 软件急停依赖进程和串口正常工作，不能代替物理急停。
+
+## 文档
+
+| 文档 | 内容 |
+|------|------|
+| [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) | 当前进度、下一步、已知问题（每次提交后更新） |
+| [docs/lab-setup.md](docs/lab-setup.md) | 实验室 Windows 部署、真机配置、现场已测得的参数、标定方法 |
+| [docs/real-machine-checklist.md](docs/real-machine-checklist.md) | 当前版本真机复验清单与判据 |
+| [docs/recognition-handoff.md](docs/recognition-handoff.md) | 托盘扫描与外部拍照/识别程序之间的文件握手协议 |
+| [docs/lab-sop-pl-mapping-zolix-ocr.md](docs/lab-sop-pl-mapping-zolix-ocr.md) | 老师整理的人工测量流程（需求来源） |
+| [CLAUDE.md](CLAUDE.md)、[AGENTS.md](AGENTS.md) | 给编程 Agent 的安全红线与工作约定 |
+
+厂家 SDK、驱动和原始说明书（WayneLabs 串口说明、PWM 控制器协议、Zolix 与 DField SDK、老师的流程文档）不在仓库里，需要从实验室电脑或上一任维护者处单独获取，放在仓库根目录即可（已被 `.gitignore` 排除）。

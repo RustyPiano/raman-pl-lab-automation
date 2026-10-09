@@ -249,7 +249,6 @@ acquisition:
   subtract_background: true
 output:
   directory: output/measurements
-  formats: [csv, json]
 """,
         encoding="utf-8",
     )
@@ -291,16 +290,6 @@ def test_workflow_config_rejects_nonportable_sample_id(tmp_path: Path, sample_id
         load_workflow_config(path)
 
 
-def test_workflow_config_rejects_output_formats_it_does_not_implement(tmp_path: Path):
-    data = yaml.safe_load(Path("configs/single_point.example.yaml").read_text(encoding="utf-8"))
-    data["output"]["formats"] = ["csv"]
-    path = tmp_path / "single.yaml"
-    path.write_text(yaml.safe_dump(data), encoding="utf-8")
-
-    with pytest.raises(ConfigError, match="formats"):
-        load_workflow_config(path)
-
-
 def test_devices_config_rejects_partial_home_direction_map(tmp_path: Path):
     data = yaml.safe_load(Path("configs/devices.example.yaml").read_text(encoding="utf-8"))
     data["stage"]["home_direction"] = {"x": "negative", "y": "negative"}
@@ -331,7 +320,6 @@ acquisition:
   subtract_background: true
 output:
   directory: output/measurements
-  formats: [csv, json]
 """,
         encoding="utf-8",
     )
@@ -367,7 +355,6 @@ acquisition:
   subtract_background: true
 output:
   directory: output/measurements
-  formats: [csv, json]
 """
     if replacement.startswith("grating"):
         text = text.replace("grating: 1", replacement)
@@ -490,7 +477,7 @@ devices_config: configs/devices.example.yaml
 sample: {id: sample-001, operator: lab}
 optics: {entrance_port: side, exit_port: direct, grating: 1, center_wavelength_nm: 600, slit_width_um: 100}
 acquisition: {exposure_ms: 1000, gain: low, read_mode: fvb, frames: 1, subtract_background: true}
-output: {directory: output/measurements, formats: [csv, json]}
+output: {directory: output/measurements}
 """,
         encoding="utf-8",
     )

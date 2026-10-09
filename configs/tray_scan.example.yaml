@@ -14,6 +14,8 @@ optics:
   grating: 1  # Zolix turret: 1=1800 g/mm, 2=600 g/mm, 3=150 g/mm
   center_wavelength_nm: 600
   slit_width_um: 100
+  excitation_wavelength_nm: null  # fill from the actual laser
+  laser_power_mw: null  # measured at the sample; not a software power setpoint
 
 acquisition:
   exposure_ms: 1000
@@ -24,7 +26,6 @@ acquisition:
 
 output:
   directory: output/tray_scan
-  formats: [csv, json]
 
 # Sample-tray grid (wafer centers from known geometry). Set on hardware.
 # Placeholder pitch/offset keep every wafer center inside the example device
@@ -58,6 +59,9 @@ calibration:
   a22: 0.5
   image_center_px: 320
   image_center_py: 240
+  # Required for real runs; measure these together with the matrix above.
+  # image_width_px: null
+  # image_height_px: null
 
 # Minimum connected-component area (px) to treat a mask blob as a sample.
 min_area: 5

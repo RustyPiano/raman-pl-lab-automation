@@ -51,9 +51,7 @@ light:
   #     channel: 1
   #     frequency_hz: 1000
   #     duty_percent: 5.0
-  #     default_off_required: true
   #   laser:
   #     channel: 2
   #     frequency_hz: 1000
   #     duty_percent: 5.0
-  #     default_off_required: true

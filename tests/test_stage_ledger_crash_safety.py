@@ -33,6 +33,9 @@ class FakeTransport:
         self.writes = []
         self.reads = 0
 
+    def reset_input_buffer(self):
+        pass
+
     def write(self, data: bytes):
         self.writes.append(data)
 

@@ -60,10 +60,25 @@ def test_missing_field_rejected(tmp_path):
         load_tray_scan_config(_write(tmp_path, body))
 
 
-def test_pattern_count_mismatch_rejected(tmp_path):
-    body = _valid_body().replace("surrounding_count: 2", "surrounding_count: 3")
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("surrounding_count: 2", "surrounding_count: 3"),
+        ("surrounding_distance_um: 20", "surrounding_distance_um: 0"),
+        ("repeats_per_point: 2", "repeats_per_point: 1"),
+        ("rows: 2", "rows: 0"),
+        ("cols: 2", "cols: -1"),
+        ("pitch_x_um: 2000", "pitch_x_um: 0"),
+        ("pitch_y_um: 2000", "pitch_y_um: -1"),
+        ("order: serpentine", "order: spiral"),
+        ("burn_metric: relative_l2", "burn_metric: cosine"),
+    ],
+)
+def test_invalid_pattern_or_tray_geometry_rejected(tmp_path, old, new):
+    body = _valid_body()
+    assert old in body
     with pytest.raises(ConfigError):
-        load_tray_scan_config(_write(tmp_path, body))
+        load_tray_scan_config(_write(tmp_path, body.replace(old, new)))
 
 
 def test_singular_calibration_matrix_rejected(tmp_path):

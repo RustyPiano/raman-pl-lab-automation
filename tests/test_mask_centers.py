@@ -1,6 +1,5 @@
 import pytest
 
-from lab_auto.errors import ConfigError
 from lab_auto.vision.mask_centers import SampleCenter, extract_centers
 
 
@@ -79,11 +78,6 @@ def test_empty_and_all_zero_mask_return_empty():
     assert extract_centers([[0, 0], [0, 0]]) == []
 
 
-def test_ragged_rows_raise():
-    with pytest.raises((ConfigError, ValueError)):
-        extract_centers([[0, 1], [1]])
-
-
 def test_labels_are_unique_and_stable():
     mask = [
         [1, 1, 0, 0, 0],
@@ -94,25 +88,3 @@ def test_labels_are_unique_and_stable():
     centers = extract_centers(mask)
     labels = [c.label for c in centers]
     assert len(set(labels)) == len(labels)
-
-
-def test_string_row_rejected_not_read_as_foreground():
-    # a string row passes len() and its chars compare != 0; must be rejected.
-    with pytest.raises(ConfigError):
-        extract_centers(["000", "010"])
-
-
-def test_non_grid_rejected():
-    with pytest.raises(ConfigError):
-        extract_centers("not a grid")
-
-
-@pytest.mark.parametrize("mask", [[[0, "1"]], [[0, float("nan")]]])
-def test_non_numeric_or_non_finite_values_are_rejected(mask):
-    with pytest.raises(ConfigError, match="finite numbers"):
-        extract_centers(mask)
-
-
-def test_invalid_min_area_is_rejected():
-    with pytest.raises(ConfigError, match="positive integer"):
-        extract_centers([[1]], min_area=0)

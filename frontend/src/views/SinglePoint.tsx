@@ -9,7 +9,7 @@ import { SafetyConfirm } from '@/components/SafetyConfirm';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Field, FieldDescription, FieldGroup, FieldLabel, FieldSeparator } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import {
@@ -22,6 +22,13 @@ import {
 } from '@/components/ui/select';
 import { useWorkflowStore } from '@/stores/workflowStore';
 import { cn } from '@/lib/utils';
+
+const modeLabel: Record<RunMode, string> = { dry_run: '空运行', simulated: '模拟', real: '真机' };
+const modeDescription: Record<RunMode, string> = {
+  dry_run: '只列出动作，不连接设备。',
+  simulated: '用模拟设备采集并保存数据。',
+  real: '控制真实设备并开启激光。',
+};
 
 const SpectrumChart = lazy(() =>
   import('@/components/SpectrumChart').then((module) => ({ default: module.SpectrumChart })),
@@ -36,13 +43,36 @@ export function SinglePoint() {
   const [subtractBackground, setSubtractBackground] = useState<'config' | 'on' | 'off'>('config');
   const [showSafetyDialog, setShowSafetyDialog] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
+  const [recovering, setRecovering] = useState(true);
 
   const currentJob = useWorkflowStore((state) => state.currentJob);
   const startSinglePoint = useWorkflowStore((state) => state.startSinglePoint);
   const stopJob = useWorkflowStore((state) => state.stopJob);
   const clearLogs = useWorkflowStore((state) => state.clearLogs);
+  const fetchJobs = useWorkflowStore((state) => state.fetchJobs);
   const isRunning = currentJob?.status === 'running' || currentJob?.status === 'pending' || currentJob?.status === 'stopping';
   const isStopping = currentJob?.status === 'stopping';
+  const displayedMode = isRunning ? currentJob?.mode ?? mode : mode;
+
+  useEffect(() => {
+    let active = true;
+    let fetching = false;
+    const refresh = async () => {
+      if (fetching) return;
+      fetching = true;
+      try {
+        await fetchJobs();
+        if (active) setRecovering(false);
+      } catch {
+        if (active) setRecovering(true);
+      } finally {
+        fetching = false;
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 3000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [fetchJobs]);
 
   useEffect(() => {
     const loadConfigs = async () => {
@@ -100,17 +130,16 @@ export function SinglePoint() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div className="flex flex-col gap-1">
           <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">单点 Raman 测量</h1>
-          <p className="max-w-2xl text-sm text-muted-foreground sm:text-base">选择实验配置并执行一次可追踪的 Raman/PL 光谱采集。</p>
+          <p className="max-w-2xl text-sm text-muted-foreground sm:text-base">选择配置，采集一条 Raman/PL 光谱。</p>
         </div>
-        <Badge variant={mode === 'real' ? 'destructive' : 'secondary'} className="w-fit">
-          {mode === 'dry_run' ? '安全空运行' : mode === 'simulated' ? '模拟设备' : '真机模式'}
+        <Badge variant={displayedMode === 'real' ? 'destructive' : 'secondary'} className="w-fit">
+          {modeLabel[displayedMode]}
         </Badge>
       </div>
 
       <Card>
         <CardHeader>
           <CardTitle>测量配置</CardTitle>
-          <CardDescription>默认不会接触真实硬件；真机模式必须完成逐项安全确认。</CardDescription>
         </CardHeader>
         <CardContent>
           <FieldGroup className="gap-5">
@@ -139,9 +168,7 @@ export function SinglePoint() {
                     </SelectGroup>
                   </SelectContent>
                 </Select>
-                <FieldDescription>
-                  {mode === 'real' ? '会打开真实设备并可能开启激光。' : '不会控制实验室真实设备。'}
-                </FieldDescription>
+                <FieldDescription>{modeDescription[mode]}</FieldDescription>
               </Field>
             </div>
 
@@ -176,14 +203,14 @@ export function SinglePoint() {
         </CardContent>
         <CardFooter>
           {!isRunning ? (
-            <Button onClick={handleStartClick} disabled={isStarting || !selectedConfig} size="lg" className="w-full sm:w-auto sm:min-w-44">
+            <Button onClick={handleStartClick} disabled={recovering || isStarting || !selectedConfig} size="lg" className="w-full sm:w-auto sm:min-w-44">
               <Play data-icon="inline-start" />
-              {isStarting ? '正在启动…' : '开始测量'}
+              {recovering ? '正在读取任务…' : isStarting ? '正在启动…' : '开始测量'}
             </Button>
           ) : (
             <Button onClick={() => void handleStop()} disabled={isStopping} variant="destructive" size="lg" className="w-full sm:w-auto">
               <Square data-icon="inline-start" />
-              {isStopping ? '正在等待安全停止…' : '停止测量'}
+              {isStopping ? '正在停止…' : '停止测量'}
             </Button>
           )}
         </CardFooter>

@@ -52,11 +52,17 @@ class FakeModbusSlave:
         del self._out[:n]
         return chunk
 
+    def reset_input_buffer(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
 
 # --- config + happy-path register fixtures ----------------------------
 
-LASER = PwmChannel(channel=2, frequency_hz=1000, duty_percent=5.0, default_off_required=True)
-LED = PwmChannel(channel=1, frequency_hz=1000, duty_percent=5.0, default_off_required=True)
+LASER = PwmChannel(channel=2, frequency_hz=1000, duty_percent=5.0)
+LED = PwmChannel(channel=1, frequency_hz=1000, duty_percent=5.0)
 
 CONFIG = LightConfig(
     type="pwm_modbus",
@@ -82,7 +88,7 @@ def _healthy_registers():
 
 
 def _adapter(slave):
-    return PwmModbusLight(CONFIG, transport=slave, dry_run=False)
+    return PwmModbusLight(CONFIG, transport=slave)
 
 
 # --- interface parity --------------------------------------------------
@@ -160,85 +166,26 @@ def test_laser_on_refuses_on_duty_mismatch():
         light.laser_on()
 
 
-# --- Reg1 write precondition ------------------------------------------
-
-def test_ensure_voltage_setpoint_refuses_when_channel_on():
-    regs = _healthy_registers()
-    regs[mb.VOLTAGE_REGISTER] = 0
-    regs[mb.output_state_register(LED.channel)] = 1
-    light = _adapter(FakeModbusSlave(registers=regs))
-    with pytest.raises(DeviceError):
-        light.ensure_voltage_setpoint()
-
-
-def test_ensure_voltage_setpoint_writes_when_all_off():
-    regs = _healthy_registers()
-    regs[mb.VOLTAGE_REGISTER] = 0
-    slave = FakeModbusSlave(registers=regs)
-    light = _adapter(slave)
-    light.ensure_voltage_setpoint()
-    assert slave.registers[mb.VOLTAGE_REGISTER] == 50
-
-
-def test_ensure_voltage_setpoint_refuses_on_reg1_readback_mismatch():
-    # Reg1 (0x0032 = 5.0 V) must be confirmed by read-back, not just written.
-    regs = _healthy_registers()
-    regs[mb.VOLTAGE_REGISTER] = 0
-    slave = FakeModbusSlave(registers=regs, ignore_writes_to={mb.VOLTAGE_REGISTER})
-    light = _adapter(slave)
-    with pytest.raises(DeviceError):
-        light.ensure_voltage_setpoint()
-
-
-# --- LED isolation -----------------------------------------------------
-
-def test_led_on_sets_led_state_only():
-    slave = FakeModbusSlave(registers=_healthy_registers())
-    light = _adapter(slave)
-    light.led_on()
-    assert light.led_state == "on_confirmed"
-    assert light.laser_state == "unknown"  # never satisfies the laser precondition
-
-
 # --- off / failure path ------------------------------------------------
 
-def test_laser_off_confirms_all_channels_off():
+def test_safety_reset_confirms_all_channels_off():
     regs = _healthy_registers()
     regs[mb.output_state_register(LASER.channel)] = 1
     slave = FakeModbusSlave(registers=regs)
     light = _adapter(slave)
-    light.laser_off()
+    light.safety_reset()
     assert light.laser_state == "off_confirmed"
     assert slave.registers[mb.output_state_register(LASER.channel)] == 0
 
 
-def test_laser_off_with_build_side_error_enters_manual_wait():
-    # defense in depth: even a frame-builder error (e.g. bad station) on the off
-    # path must surface as DeviceError and force manual confirmation, not leak.
-    bad_config = LightConfig(
-        type="pwm_modbus",
-        manual_light_control=False,
-        port="COM7",
-        station_id=0,  # build_read/write_request will raise ProtocolError
-        baudrate=9600,
-        max_output_voltage_v=5.0,
-        required_output_voltage_v=5.0,
-        channels={"laser": LASER},
-    )
-    light = PwmModbusLight(bad_config, transport=FakeModbusSlave(registers={}), dry_run=False)
-    with pytest.raises(DeviceError):
-        light.laser_off()
-    assert light.laser_state == "manual_wait"
-
-
-def test_laser_off_readback_failure_requires_manual():
+def test_safety_reset_readback_failure_requires_manual():
     slave = FakeModbusSlave(
         registers={**_healthy_registers(), mb.output_state_register(LASER.channel): 1},
         ignore_writes_to={mb.output_state_register(LASER.channel)},
     )
     light = _adapter(slave)
     with pytest.raises(DeviceError):
-        light.laser_off()
+        light.safety_reset()
     assert light.laser_state == "manual_wait"
 
 
@@ -248,7 +195,7 @@ def test_never_writes_forbidden_registers_or_station_zero():
     slave = FakeModbusSlave(registers=_healthy_registers())
     light = _adapter(slave)
     light.laser_on()
-    light.laser_off()
+    light.safety_reset()
     for frame in slave.requests:
         assert frame[0] != 0  # station id never 0
         if frame[1] in (mb.WRITE_SINGLE, mb.WRITE_MULTIPLE):
@@ -277,15 +224,3 @@ def test_exception_response_raises_device_error():
     light = _adapter(FakeModbusSlave(fault=fault))
     with pytest.raises(DeviceError):
         light.laser_on()
-
-
-# --- dry-run -----------------------------------------------------------
-
-def test_dry_run_performs_no_io():
-    slave = FakeModbusSlave(registers={})
-    light = PwmModbusLight(CONFIG, transport=slave, dry_run=True)
-    light.laser_on()
-    light.laser_off()
-    light.led_on()
-    assert slave.requests == []
-    assert light.laser_state == "off_confirmed"

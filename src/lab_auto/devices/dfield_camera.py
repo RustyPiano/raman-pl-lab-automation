@@ -31,6 +31,23 @@ def _read_mode_from_code(read_mode_code: int) -> str:
     return {0: "fvb", 1: "image"}.get(read_mode_code, f"unknown:{read_mode_code}")
 
 
+def write_frame_csv(frame: CaptureFrame, out: Path) -> None:
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with out.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        if frame.read_mode == "image":
+            if frame.width * frame.height != len(frame.values):
+                raise ConfigError("image capture dimensions do not match value count")
+            writer.writerow(["row", "col", "intensity_raw", "saturated"])
+            for index, (value, saturated) in enumerate(zip(frame.values, frame.saturated, strict=True)):
+                row, col = divmod(index, frame.width)
+                writer.writerow([row, col, value, str(saturated).lower()])
+        else:
+            writer.writerow(["pixel_index", "intensity_raw", "saturated"])
+            for index, (value, saturated) in enumerate(zip(frame.values, frame.saturated, strict=True)):
+                writer.writerow([index, value, str(saturated).lower()])
+
+
 class DFieldCamera:
     def __init__(self, raw):
         self.raw = raw
@@ -64,7 +81,7 @@ class DFieldCamera:
             bin_y=bin_y,
             roi=roi,
         )
-        capture_kwargs = dict(
+        result = self.raw.capture(
             read_mode_code=read_mode_to_code(read_mode),
             exposure_ms=exposure_ms,
             gain_code=gain_to_code(gain),
@@ -72,10 +89,8 @@ class DFieldCamera:
             bin_x=bin_x,
             bin_y=bin_y,
             roi=roi,
+            should_cancel=should_cancel,
         )
-        if should_cancel is not None:
-            capture_kwargs["should_cancel"] = should_cancel
-        result = self.raw.capture(**capture_kwargs)
         return CaptureFrame(
             read_mode=read_mode,
             width=result["width"],
@@ -86,7 +101,6 @@ class DFieldCamera:
             exposure_ms=exposure_ms,
             gain=gain,
             values=result["values"],
-            saturated_count=sum(1 for value in result["saturated"] if value),
             saturated=result["saturated"],
             metadata={
                 "detector_width": result.get("detector_width", result["width"]),
@@ -110,21 +124,7 @@ class DFieldCamera:
         roi: tuple[int, int, int, int] | None = None,
     ) -> None:
         frame = self.capture(read_mode=mode, exposure_ms=exposure_ms, gain=gain, frames=1, bin_x=bin_x, bin_y=bin_y, roi=roi)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        with out.open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.writer(handle)
-            if mode == "image":
-                expected = frame.width * frame.height
-                if expected != len(frame.values):
-                    raise ConfigError("image capture dimensions do not match value count")
-                writer.writerow(["row", "col", "intensity_raw", "saturated"])
-                for index, (value, saturated) in enumerate(zip(frame.values, frame.saturated, strict=True)):
-                    row, col = divmod(index, frame.width)
-                    writer.writerow([row, col, value, str(saturated).lower()])
-            else:
-                writer.writerow(["pixel_index", "intensity_raw", "saturated"])
-                for index, (value, saturated) in enumerate(zip(frame.values, frame.saturated, strict=True)):
-                    writer.writerow([index, value, str(saturated).lower()])
+        write_frame_csv(frame, out)
 
     def close(self) -> None:
         self.raw.close()

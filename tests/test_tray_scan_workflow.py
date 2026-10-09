@@ -78,7 +78,7 @@ def _config(*, tray, pattern, calibration, min_area=1, on_out_of_range="skip", o
         sample=SampleConfig(id="tray-test", operator="lab"),
         optics=OpticsConfig(entrance_port="side", exit_port="direct", grating=1, center_wavelength_nm=600.0, slit_width_um=100),
         acquisition=AcquisitionConfig(exposure_ms=10.0, gain="low", read_mode="fvb", frames=1, subtract_background=False),
-        output=OutputConfig(directory=output_dir, formats=["csv"]),
+        output=OutputConfig(directory=output_dir),
         tray=tray,
         pattern=pattern,
         calibration=calibration,
@@ -89,7 +89,18 @@ def _config(*, tray, pattern, calibration, min_area=1, on_out_of_range="skip", o
 
 def _calib():
     # identity-ish, image center at (2,2); a blob at (1,1) gives delta (1,1).
-    return Calibration(objective="x", a11=1.0, a12=0.0, a21=0.0, a22=1.0, image_center_px=2.0, image_center_py=2.0)
+    return Calibration(objective="x", a11=1.0, a12=0.0, a21=0.0, a22=1.0, image_center_px=2.0, image_center_py=2.0, image_width_px=5, image_height_px=5)
+
+
+def test_real_run_requires_image_dimensions_before_movement(tmp_path):
+    cfg = _config(tray=_tray_1x1(), pattern=_single_point_pattern(), calibration=replace(_calib(), image_width_px=None, image_height_px=None), output_dir=tmp_path)
+    stage = _homed_stage()
+    measurer = FakeMeasurer(lambda r, n: [1.0])
+    workflow = TrayScanWorkflow.real(cfg, stage=stage, point_measurer=measurer, mask_provider=lambda wafer: ONE_BLOB)
+    with pytest.raises(SafetyError, match="image_width_px"):
+        workflow.run(require_confirmation=False)
+    assert stage.ledger.position_um == {"x": 0.0, "y": 0.0}
+    assert measurer.calls == []
 
 
 def _tray_1x1():
@@ -383,7 +394,7 @@ def test_empty_mask_flags_no_centers_and_resume_retries(tmp_path):
 
     def provider(wafer):
         calls["n"] += 1
-        return [[0, 0, 0], [0, 0, 0], [0, 0, 0]]
+        return [[0] * 5 for _ in range(5)]
 
     wf = TrayScanWorkflow.real(cfg, stage=_homed_stage(), point_measurer=FakeMeasurer(lambda r, n: [1.0]), mask_provider=provider)
     manifest = wf.run(require_confirmation=False)

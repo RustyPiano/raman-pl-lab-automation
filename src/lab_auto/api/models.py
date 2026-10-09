@@ -1,5 +1,4 @@
 """Pydantic models for API requests and responses."""
-from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -38,8 +37,6 @@ class TrayPreviewResponse(BaseModel):
 class JobProgress(BaseModel):
     """Progress information for a running job."""
     current_step: str | None = None
-    total_steps: int | None = None
-    completed_steps: int = 0
     message: str | None = None
     percentage: float | None = None
 
@@ -54,6 +51,7 @@ class JobStatus(BaseModel):
     """
     id: str
     type: str
+    mode: Literal["dry_run", "simulated", "real"] | None = None
     status: Literal["pending", "running", "stopping", "completed", "failed", "stopped"]
     progress: JobProgress
     created_at: str
@@ -88,20 +86,15 @@ class ConfigListResponse(BaseModel):
     configs: list[str]
 
 
-class ConfigValidationResponse(BaseModel):
-    """Configuration validation result."""
-    valid: bool
-    errors: list[str] | None = None
-
-
 class HistoryRecord(BaseModel):
     """One persisted single-point measurement."""
     id: str
     source: Literal["measurement"] = "measurement"
     type: Literal["single_point"] = "single_point"
-    status: Literal["completed"] = "completed"
+    status: Literal["completed", "failed", "stopped"] = "completed"
+    error: str | None = None
     created_at: str
-    completed_at: str
+    completed_at: str | None
     sample_id: str | None = None
     operator: str | None = None
     mode: str

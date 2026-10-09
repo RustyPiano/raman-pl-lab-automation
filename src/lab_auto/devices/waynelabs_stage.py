@@ -1,6 +1,5 @@
 import json
 import math
-import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -9,6 +8,7 @@ from enum import Enum
 from lab_auto.config import StageConfig
 from lab_auto.devices.raw.waynelabs_protocol import Completed, LimitOrHome, ProtocolError, WaynelabsRawProtocol
 from lab_auto.errors import ConfigError, DeviceError, SafetyError
+from lab_auto.storage import write_json
 
 
 WAYNELABS_SERIAL_READ_TIMEOUT_S = 0.25
@@ -71,26 +71,14 @@ class PositionLedger:
             return cls()
 
     def save(self, config: StageConfig) -> None:
-        config.state_file.parent.mkdir(parents=True, exist_ok=True)
-        # Atomic: write a sibling temp file then os.replace it in, so a crash/power
-        # loss mid-write leaves the previous complete ledger intact (write_text
-        # truncates first, so a partial write would otherwise be unloadable).
-        tmp = config.state_file.with_name(config.state_file.name + ".tmp")
-        tmp.write_text(
-            json.dumps(
-                {
-                    "states": {axis: state.value for axis, state in self.states.items()},
-                    "position_um": self.position_um,
-                    "in_flight": self.in_flight,
-                    "resolution_um": config.resolution_um,
-                    "last_updated": datetime.now(timezone.utc).isoformat(),
-                    "device_identity": {"type": config.type, "port": config.port},
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-        os.replace(tmp, config.state_file)
+        write_json(config.state_file, {
+            "states": {axis: state.value for axis, state in self.states.items()},
+            "position_um": self.position_um,
+            "in_flight": self.in_flight,
+            "resolution_um": config.resolution_um,
+            "last_updated": datetime.now(timezone.utc).isoformat(),
+            "device_identity": {"type": config.type, "port": config.port},
+        })
 
 
 class WaynelabsStage:
@@ -110,53 +98,30 @@ class WaynelabsStage:
         self.protocol = protocol or WaynelabsRawProtocol()
 
     def _steps_for_um(self, axis: str, um: float) -> int:
-        self._assert_axis_supported(axis)
-        try:
-            quotient = abs(um) / self.config.resolution_um[axis]
-            if not math.isfinite(quotient):
-                raise ConfigError("stage move distance produces invalid hardware steps")
-            return round(quotient)
-        except OverflowError as exc:
-            raise ConfigError("stage move distance produces invalid hardware steps") from exc
-
-    def _direction_for_um(self, um: float) -> str:
-        return "positive" if um >= 0 else "negative"
-
-    def _is_finite_move_distance(self, um: float) -> bool:
-        if not isinstance(um, (int, float)) or isinstance(um, bool):
-            return False
-        try:
-            number = float(um)
-        except (OverflowError, TypeError, ValueError):
-            return False
-        return math.isfinite(number)
+        quotient = abs(um) / self.config.resolution_um[axis]
+        if not math.isfinite(quotient):
+            raise ConfigError("stage move distance produces invalid hardware steps")
+        return round(quotient)
 
     def _commanded_um(self, *, axis: str, requested_um: float, steps: int) -> float:
         sign = 1.0 if requested_um >= 0 else -1.0
         return sign * steps * self.config.resolution_um[axis]
 
     def _assert_safe_move(self, axis: str, um: float) -> None:
-        self._assert_axis_supported(axis)
-        if not self._is_finite_move_distance(um):
-            raise ConfigError("stage move distance must be finite")
         state = self.ledger.states.get(axis, AxisState.UNKNOWN)
         if state is AxisState.UNKNOWN and abs(um) > self.config.max_unknown_move_um:
             raise SafetyError("unknown position only allows small relative moves")
         if state is not AxisState.UNKNOWN:
-            if axis not in self.ledger.position_um or not math.isfinite(self.ledger.position_um[axis]):
-                raise SafetyError(f"known position for axis {axis} is missing or invalid")
             new_position = self.ledger.position_um[axis] + um
             low, high = self.config.soft_limits_um[axis]
-            if new_position < low or new_position > high:
+            # 写成区间包含判断，台账位置为 NaN 时也会拒绝
+            if not low <= new_position <= high:
                 raise SafetyError(f"move exceeds soft limit for axis {axis}")
 
     def _assert_axis_supported(self, axis: str) -> None:
-        if axis not in self.config.resolution_um or axis not in self.config.soft_limits_um:
+        # config 已保证 resolution_um 与 soft_limits_um 的轴集合相同
+        if axis not in self.config.resolution_um:
             raise ConfigError(f"unsupported stage axis: {axis}")
-
-    def _assert_linear_controller(self) -> None:
-        if self.config.type != "waynelabs_linear":
-            raise DeviceError("WayneLabs movement requires a waynelabs_linear stage")
 
     def _parse_completion_buffer(self, buffer: str) -> Completed | LimitOrHome | None:
         text = "".join(buffer.split())
@@ -174,30 +139,30 @@ class WaynelabsStage:
             return self.protocol.parse_completion(text[index : index + 2])
         return None
 
-    def _reset_input_buffer(self) -> None:
-        # Drop stale/late bytes before writing a command, so a prior response or a
-        # noise byte can't be misread as this command's completion. getattr-guarded
-        # so transports without the method (or None) are a no-op.
-        reset = getattr(self.transport, "reset_input_buffer", None)
-        if reset is not None:
-            reset()
-
-    def _send_command(self, command: str, *, timeout_s: float) -> Completed | LimitOrHome | None:
-        if self.dry_run or self.transport is None:
-            return None
-        self._reset_input_buffer()
+    def _write(self, command: str) -> None:
+        # 写命令前丢弃迟到的字节，避免上一条响应或噪声被误读成本条命令的完成标记
+        self.transport.reset_input_buffer()
         try:
             self.transport.write(command.encode("ascii"))
         except Exception as exc:
             raise DeviceError(f"WayneLabs serial write failed: {exc}") from exc
+
+    def _readline(self) -> str:
+        # 串口异常统一转成 DeviceError，移动流程据此把该轴标记为 UNKNOWN
+        try:
+            return self.transport.readline().decode("ascii", errors="replace")
+        except Exception as exc:
+            raise DeviceError(f"WayneLabs serial read failed: {exc}") from exc
+
+    def _send_command(self, command: str, *, timeout_s: float) -> Completed | LimitOrHome | None:
+        if self.dry_run:
+            return None
+        self._write(command)
         deadline = time.monotonic() + timeout_s
         last_response = ""
         buffer = ""
         while time.monotonic() < deadline:
-            try:
-                response = self.transport.readline().decode("ascii", errors="replace")
-            except Exception as exc:
-                raise DeviceError(f"WayneLabs serial read failed: {exc}") from exc
+            response = self._readline()
             last_response = response
             buffer += response
             try:
@@ -214,20 +179,14 @@ class WaynelabsStage:
     def _read_identify_first_response(self) -> str:
         deadline = time.monotonic() + WAYNELABS_IDENTIFY_TIMEOUT_S
         while time.monotonic() < deadline:
-            try:
-                response = self.transport.readline().decode("ascii", errors="replace")
-            except Exception as exc:
-                raise DeviceError(f"WayneLabs serial read failed: {exc}") from exc
+            response = self._readline()
             if response:
                 return response
             time.sleep(0.01)
         raise DeviceError("WayneLabs identify timed out waiting for device info")
 
     def _assert_no_trailing_response(self) -> None:
-        try:
-            response = self.transport.readline().decode("ascii", errors="replace")
-        except Exception as exc:
-            raise DeviceError(f"WayneLabs serial read failed: {exc}") from exc
+        response = self._readline()
         if response.strip():
             raise DeviceError(f"unexpected WayneLabs trailing response after completion: {response!r}")
 
@@ -235,10 +194,7 @@ class WaynelabsStage:
         responses = []
         idle_deadline = time.monotonic() + WAYNELABS_IDENTIFY_DRAIN_IDLE_TIMEOUT_S
         while len(responses) < 3 and time.monotonic() < idle_deadline:
-            try:
-                response = self.transport.readline().decode("ascii", errors="replace")
-            except Exception as exc:
-                raise DeviceError(f"WayneLabs serial read failed: {exc}") from exc
+            response = self._readline()
             if response:
                 responses.append(response)
                 idle_deadline = time.monotonic() + WAYNELABS_IDENTIFY_DRAIN_IDLE_TIMEOUT_S
@@ -255,16 +211,15 @@ class WaynelabsStage:
         self._save_ledger()
 
     def move_relative(self, *, axis: str, um: float, speed: int) -> list[str]:
-        self._assert_linear_controller()
         self._assert_axis_supported(axis)
-        if not self._is_finite_move_distance(um):
+        if not math.isfinite(um):
             raise ConfigError("stage move distance must be finite")
         steps = self._steps_for_um(axis, um)
         if um != 0 and steps == 0:
             raise ConfigError("stage move distance rounds to zero hardware steps")
         commanded_um = self._commanded_um(axis=axis, requested_um=um, steps=steps)
         self._assert_safe_move(axis, commanded_um)
-        direction = self._direction_for_um(um)
+        direction = "positive" if um >= 0 else "negative"
         try:
             commands = [
                 self.protocol.build_move_command(axis=axis, steps=chunk, speed=speed, direction=direction)
@@ -301,26 +256,20 @@ class WaynelabsStage:
         return commands
 
     def identify(self) -> dict:
-        if self.dry_run or self.transport is None:
+        if self.dry_run:
             return {"type": self.config.type, "port": self.config.port}
-        command = self.protocol.build_identify_command()
-        self._reset_input_buffer()
-        try:
-            self.transport.write(command.encode("ascii"))
-        except Exception as exc:
-            raise DeviceError(f"WayneLabs serial write failed: {exc}") from exc
+        self._write(self.protocol.build_identify_command())
         responses = [self._read_identify_first_response()]
         responses.extend(self._drain_identify_followup_responses())
         try:
             info = self.protocol.parse_device_info(responses[0])
         except ProtocolError as exc:
             raise DeviceError(f"unexpected WayneLabs identify response: {responses[0]!r}") from exc
-        if self.config.type == "waynelabs_linear" and info.device_code != "X":
+        if info.device_code != "X":
             raise DeviceError(f"WayneLabs device code {info.device_code!r} is not a linear stage controller")
         return {"type": info.device_type, "port": self.config.port, "device_code": info.device_code, "raw": "".join(responses)}
 
     def home(self, *, axis: str, direction: str, speed: int) -> list[str]:
-        self._assert_linear_controller()
         self._assert_axis_supported(axis)
         # A limit hit in EITHER direction returns the same "?t" marker, so homing the
         # wrong way records the far limit as origin 0.0 and inverts the whole axis
@@ -361,7 +310,6 @@ class WaynelabsStage:
         return [command]
 
     def trigger(self, *, mode: str) -> list[str]:
-        self._assert_linear_controller()
         try:
             command = self.protocol.build_trigger_command(mode=mode)
         except ProtocolError as exc:

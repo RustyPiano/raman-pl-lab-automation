@@ -1,7 +1,8 @@
-import csv
+import math
 from collections.abc import Callable
 from pathlib import Path
 
+from lab_auto.devices.dfield_camera import write_frame_csv
 from lab_auto.devices.dfield_validation import validate_dfield_bin_roi, validate_dfield_capture_args
 from lab_auto.devices.optics_validation import validate_zolix_optics
 from lab_auto.errors import ConfigError, WorkflowCancelled
@@ -10,6 +11,12 @@ from lab_auto.devices.zolix_spectrometer import direct_to_front_bool
 
 
 class SimulatedCamera:
+    """``light`` 为可选：给出时，激光处于 on_confirmed 状态采集的光谱在中间叠加一个高斯峰，
+    使模拟测量的背景扣除结果不全为 0。"""
+
+    def __init__(self, light=None):
+        self.light = light
+
     def status(self) -> dict:
         return {"type": "simulated", "open": True, "width": 2048, "height": 1}
 
@@ -56,6 +63,12 @@ class SimulatedCamera:
         else:
             raise ConfigError(f"unsupported DField read_mode: {read_mode}")
         values = [1000 + index for index in range(width * height)]
+        if self.light is not None and self.light.laser_state == "on_confirmed":
+            center = len(values) / 2
+            values = [
+                value + round(2000 * math.exp(-((index - center) / (len(values) / 50)) ** 2 / 2))
+                for index, value in enumerate(values)
+            ]
         if width <= 0 or height <= 0:
             raise ConfigError("simulated capture dimensions must be positive")
         return CaptureFrame(
@@ -68,7 +81,6 @@ class SimulatedCamera:
             exposure_ms=exposure_ms,
             gain=gain,
             values=values,
-            saturated_count=0,
             saturated=[False for _ in values],
             metadata={
                 "read_mode": read_mode,
@@ -96,18 +108,7 @@ class SimulatedCamera:
         roi: tuple[int, int, int, int] | None = None,
     ) -> None:
         frame = self.capture(read_mode=mode, exposure_ms=exposure_ms, gain=gain, frames=1, bin_x=bin_x, bin_y=bin_y, roi=roi)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        with out.open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.writer(handle)
-            if mode == "image":
-                writer.writerow(["row", "col", "intensity_raw", "saturated"])
-                for index, (value, saturated) in enumerate(zip(frame.values, frame.saturated, strict=True)):
-                    row, col = divmod(index, frame.width)
-                    writer.writerow([row, col, value, str(saturated).lower()])
-            else:
-                writer.writerow(["pixel_index", "intensity_raw", "saturated"])
-                for index, (value, saturated) in enumerate(zip(frame.values, frame.saturated, strict=True)):
-                    writer.writerow([index, value, str(saturated).lower()])
+        write_frame_csv(frame, out)
 
     def temperature_c(self) -> float:
         return 23.5

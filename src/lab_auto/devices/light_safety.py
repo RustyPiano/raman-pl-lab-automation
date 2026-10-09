@@ -16,11 +16,11 @@ MAX_OUTPUT_VOLTAGE_V = register_to_voltage(MAX_VOLTAGE_DECIVOLT)  # 5.0 V
 def validate_pwm_light_config(light) -> None:
     if light.manual_light_control:
         raise ConfigError("pwm_modbus backend requires manual_light_control=false")
-    if light.station_id is None or light.station_id < 1 or light.station_id > 247:
+    if light.station_id < 1 or light.station_id > 247:
         raise ConfigError("pwm_modbus station_id must be between 1 and 247 (0 is forbidden)")
-    if light.max_output_voltage_v is None or not (0 < light.max_output_voltage_v <= MAX_OUTPUT_VOLTAGE_V):
+    if not (0 < light.max_output_voltage_v <= MAX_OUTPUT_VOLTAGE_V):
         raise ConfigError(f"max_output_voltage_v must be positive and not exceed {MAX_OUTPUT_VOLTAGE_V} V")
-    if light.required_output_voltage_v is None or light.required_output_voltage_v <= 0:
+    if light.required_output_voltage_v <= 0:
         raise ConfigError("required_output_voltage_v must be positive")
     if light.required_output_voltage_v > light.max_output_voltage_v:
         raise ConfigError("required_output_voltage_v must not exceed max_output_voltage_v")
@@ -32,9 +32,9 @@ def validate_pwm_light_config(light) -> None:
             raise ConfigError(f"{name} must use the controller's 0.1 V resolution")
     if not light.port:
         raise ConfigError("pwm_modbus requires a serial port")
-    if light.baudrate is None or light.baudrate <= 0:
+    if light.baudrate <= 0:
         raise ConfigError("pwm_modbus baudrate must be positive")
-    channels = light.channels or {}
+    channels = light.channels
     if "laser" not in channels:
         raise ConfigError("pwm_modbus requires a 'laser' channel mapping")
     seen_indices: dict[int, str] = {}
@@ -52,5 +52,3 @@ def validate_pwm_light_config(light) -> None:
             raise ConfigError(f"duty_percent for '{name}' must be between 0 and 100")
         if not math.isclose(round(channel.duty_percent * 10) / 10, channel.duty_percent, abs_tol=1e-9):
             raise ConfigError(f"duty_percent for '{name}' must use the controller's 0.1% resolution")
-        if channel.default_off_required is not True:
-            raise ConfigError(f"channel '{name}' must set default_off_required: true")

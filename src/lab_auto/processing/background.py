@@ -22,15 +22,10 @@ def _assert_axis_metadata_matches(raw: SpectrumData, background: SpectrumData) -
 
 
 def _assert_x_matches(raw: SpectrumData, background: SpectrumData, wavelength_tolerance_nm: float) -> None:
-    if raw.x_axis_type != background.x_axis_type:
-        raise ConfigError("x_axis_type differs between raw and background spectra")
     if len(raw.x) != len(background.x):
         raise ConfigError("raw/background lengths differ")
     for index, (raw_x, bg_x) in enumerate(zip(raw.x, background.x, strict=True)):
-        if raw.x_axis_type == "pixel_index":
-            if int(raw_x) != int(bg_x):
-                raise ConfigError(f"x axis values differ at index {index}")
-        elif abs(float(raw_x) - float(bg_x)) > wavelength_tolerance_nm:
+        if abs(float(raw_x) - float(bg_x)) > wavelength_tolerance_nm:
             raise ConfigError(f"x axis values differ at index {index}")
 
 

@@ -32,7 +32,7 @@ devices_config: {devices_path}
 sample: {{id: tray-001, operator: lab}}
 optics: {{entrance_port: side, exit_port: direct, grating: 1, center_wavelength_nm: 600, slit_width_um: 100}}
 acquisition: {{exposure_ms: 1000, gain: low, read_mode: fvb, frames: 1, subtract_background: true}}
-output: {{directory: {output_dir}, formats: [csv, json]}}
+output: {{directory: {output_dir}}}
 tray: {{rows: 1, cols: 1, pitch_x_um: 10000, pitch_y_um: 10000, first_cell_offset_x_um: 0, first_cell_offset_y_um: 0, order: row_major}}
 pattern: {{repeats_per_point: 2, burn_metric: relative_l2, burn_threshold: 0.1, surrounding_count: 2, surrounding_distance_um: 20, surrounding_angles_deg: [0, 90]}}
 calibration: {{objective: "50x", a11: 0.5, a12: 0.0, a21: 0.0, a22: 0.5, image_center_px: 320, image_center_py: 240}}
@@ -67,7 +67,7 @@ def test_scan_tray_real_routes_through_factory(tmp_path: Path, capsys):
     factory = FakeScanFactory()
 
     exit_code = main(
-        ["scan", "tray", "--config", str(scan), "--devices-config", str(devices), "--real", "--yes"],
+        ["scan", "tray", "--config", str(scan), "--devices-config", str(devices), "--real", "--yes", *_RECOGNITION_ARGS],
         factory=factory,
     )
 
@@ -100,11 +100,12 @@ def test_scan_tray_safety_error_is_recoverable(tmp_path: Path, capsys):
     factory = FakeScanFactory(raise_safety=True)
 
     exit_code = main(
-        ["scan", "tray", "--config", str(scan), "--devices-config", str(devices), "--real", "--yes"],
+        ["scan", "tray", "--config", str(scan), "--devices-config", str(devices), "--real", "--yes", *_RECOGNITION_ARGS],
         factory=factory,
     )
 
     assert exit_code == 2
+    assert factory.created is True
     assert "error:" in capsys.readouterr().out
 
 
@@ -121,18 +122,23 @@ def test_scan_tray_invalid_config_is_recoverable(tmp_path: Path, capsys):
     assert "error:" in capsys.readouterr().out
 
 
-def test_scan_tray_real_without_recognition_hook_fails_before_hardware(tmp_path: Path, capsys):
-    # Real scan via the default factory has no mask provider wired yet: it must
-    # fail fast (recoverable) without opening devices or moving the stage.
+def test_scan_tray_real_without_recognition_handshake_fails_before_hardware(tmp_path: Path, capsys):
+    # Without the recognition file handshake a real scan must fail fast
+    # (recoverable) without opening devices or moving the stage.
     devices = tmp_path / "devices.yaml"
     scan = tmp_path / "tray_scan.yaml"
     write_devices_config(devices)
     write_scan_config(scan, devices, tmp_path / "out")
+    factory = FakeScanFactory()
 
-    exit_code = main(["scan", "tray", "--config", str(scan), "--devices-config", str(devices), "--real", "--yes"])
+    exit_code = main(
+        ["scan", "tray", "--config", str(scan), "--devices-config", str(devices), "--real", "--yes"],
+        factory=factory,
+    )
 
     assert exit_code == 2
-    assert "error:" in capsys.readouterr().out
+    assert factory.created is False
+    assert "--recognition-dir" in capsys.readouterr().out
 
 
 def test_scan_tray_invalid_per_point_config_rejected_early(tmp_path: Path, capsys):
@@ -149,15 +155,19 @@ def test_scan_tray_invalid_per_point_config_rejected_early(tmp_path: Path, capsy
     assert "error:" in capsys.readouterr().out
 
 
+_RECOGNITION_ARGS = ("--recognition-dir", "handoff", "--session-id", "loading-001")
+
+
 class FakeScanFactory:
     def __init__(self, *, raise_safety: bool = False):
         self.created = False
         self.scan_config = None
         self.workflow = FakeScanWorkflow(raise_safety=raise_safety)
 
-    def create_tray_scan_workflow(self, scan_config, devices_config):
+    def create_tray_scan_workflow(self, scan_config, devices_config, *, mask_provider=None):
         self.created = True
         self.scan_config = scan_config
+        self.mask_provider = mask_provider
         return self.workflow
 
 
@@ -174,3 +184,16 @@ class FakeScanWorkflow:
 
     def close(self):
         self.calls.append(("close",))
+
+
+def test_scan_cli_connects_session_provider(tmp_path):
+    devices, scan = tmp_path / "devices.yaml", tmp_path / "tray.yaml"
+    write_devices_config(devices)
+    write_scan_config(scan, devices, tmp_path / "output")
+    factory = FakeScanFactory()
+    assert main([
+        "scan", "tray", "--config", str(scan), "--real", "--yes",
+        "--recognition-dir", str(tmp_path / "handoff"), "--session-id", "loading-001",
+    ], factory=factory) == 0
+    assert factory.mask_provider.session_id == "loading-001"
+    assert factory.mask_provider.calibration.objective == "50x"

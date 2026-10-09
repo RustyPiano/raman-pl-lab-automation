@@ -8,9 +8,6 @@ micrometers; ``index`` is the visiting position in the configured order.
 from dataclasses import dataclass
 
 from lab_auto.config import TrayLayout
-from lab_auto.errors import ConfigError
-
-_ORDERS = ("row_major", "serpentine")
 
 
 @dataclass(frozen=True)
@@ -23,14 +20,7 @@ class WaferCenter:
 
 
 def wafer_centers(layout: TrayLayout):
-    """Ordered wafer-center coordinates for the tray grid."""
-    if layout.rows <= 0 or layout.cols <= 0:
-        raise ConfigError("tray rows and cols must be positive")
-    if layout.pitch_x_um <= 0 or layout.pitch_y_um <= 0:
-        raise ConfigError("tray pitch must be positive")
-    if layout.order not in _ORDERS:
-        raise ConfigError(f"unknown tray order: {layout.order!r} (use {_ORDERS})")
-
+    """Ordered wafer-center coordinates for the tray grid (layout validated by config)."""
     centers = []
     index = 0
     for row in range(layout.rows):

@@ -1,7 +1,6 @@
 import pytest
 
 from lab_auto.config import TrayLayout
-from lab_auto.errors import ConfigError
 from lab_auto.scan.tray import WaferCenter, wafer_centers
 
 
@@ -51,22 +50,3 @@ def test_serpentine_reverses_alternate_rows():
     assert last.x_um == pytest.approx(50.0)
     assert last.y_um == pytest.approx(20.0 + 800.0)
     assert [c.index for c in centers] == [0, 1, 2, 3, 4, 5]
-
-
-def test_invalid_dimensions_raise():
-    with pytest.raises(ConfigError):
-        wafer_centers(_layout(rows=0))
-    with pytest.raises(ConfigError):
-        wafer_centers(_layout(cols=-1))
-
-
-def test_non_positive_pitch_raises():
-    with pytest.raises(ConfigError):
-        wafer_centers(_layout(pitch_x_um=0.0))
-    with pytest.raises(ConfigError):
-        wafer_centers(_layout(pitch_y_um=-1.0))
-
-
-def test_unknown_order_raises():
-    with pytest.raises(ConfigError):
-        wafer_centers(_layout(order="spiral"))

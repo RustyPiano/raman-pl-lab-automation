@@ -8,14 +8,10 @@ import type {
   SinglePointOverrides,
 } from '@/api/client';
 
-/**
- * Construct WebSocket URL with environment variable support
- * Handles both development and production environments
- */
+// 开发时由 Vite 代理 WebSocket，生产时与页面同源
 const getWebSocketUrl = (jobId: string): string => {
   const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsHost = import.meta.env.VITE_WS_HOST || window.location.host;
-  return `${wsProtocol}//${wsHost}/api/workflow/ws/jobs/${jobId}`;
+  return `${wsProtocol}//${window.location.host}/api/workflow/ws/jobs/${jobId}`;
 };
 
 const toJobStatus = (job: ApiJobStatus): JobStatus => ({
@@ -24,9 +20,10 @@ const toJobStatus = (job: ApiJobStatus): JobStatus => ({
   current_step: job.progress.current_step,
 });
 
+const isActive = (job: JobStatus) => ['pending', 'running', 'stopping'].includes(job.status);
+
 interface WorkflowState {
   currentJob: JobStatus | null;
-  jobs: JobStatus[];
   wsConnection: WebSocket | null;
   logs: string[];
 
@@ -48,7 +45,6 @@ interface WorkflowState {
 
 export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   currentJob: null,
-  jobs: [],
   wsConnection: null,
   logs: [],
 
@@ -88,8 +84,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
 
     ws.onopen = () => {
       if (get().wsConnection !== ws) return;
-      console.log('WebSocket connected');
-      get().addLog('🔗 Connected to job stream');
+      get().addLog('已连接任务推送');
     };
 
     ws.onmessage = (event) => {
@@ -104,18 +99,17 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
     ws.onerror = (error) => {
       if (get().wsConnection !== ws) return;
       console.error('WebSocket error:', error);
-      get().addLog('❌ Connection error');
+      get().addLog('任务推送连接出错');
     };
 
     ws.onclose = (event) => {
       if (get().wsConnection !== ws) return;
-      console.log('WebSocket closed', event.code, event.reason);
 
       set({ wsConnection: null });
 
       if (event.code !== 1000 && event.code !== 1001) {
         // Abnormal closure, attempt reconnect after 3 seconds
-        get().addLog('⚠️ Connection lost, reconnecting...');
+        get().addLog('任务推送中断，3 秒后重连');
         setTimeout(() => {
           const currentJob = get().currentJob;
           if (
@@ -126,8 +120,6 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
             get().connectWebSocket(jobId);
           }
         }, 3000);
-      } else {
-        get().addLog('🔌 Disconnected');
       }
     };
 
@@ -143,32 +135,23 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   },
 
   updateProgress: (update: ProgressUpdate, jobId: string) => {
-    if (update.type === 'pong') return;
-
     if (get().currentJob?.id !== jobId) return;
+    if (!isActive(get().currentJob!) && update.status && ['pending', 'running', 'stopping'].includes(update.status)) return;
 
     set((state) => ({
       currentJob: state.currentJob ? {
         ...state.currentJob,
         status: update.type === 'error' ? 'failed' : update.status ?? state.currentJob.status,
-        progress: update.type === 'progress'
-          ? update.percentage ?? state.currentJob.progress
-          : update.progress?.percentage ?? state.currentJob.progress,
-        current_step: update.type === 'progress'
-          ? update.step ?? state.currentJob.current_step
-          : update.progress?.current_step ?? state.currentJob.current_step,
+        progress: update.progress?.percentage ?? state.currentJob.progress,
+        current_step: update.progress?.current_step ?? state.currentJob.current_step,
         result: update.result ?? state.currentJob.result,
         error: update.error ?? state.currentJob.error,
       } : null,
     }));
 
-    // Add log message
     const status = update.type === 'error' ? 'failed' : update.status;
-    const emoji = status === 'completed' ? '✅' :
-                  status === 'failed' ? '❌' :
-                  status === 'running' || update.type === 'progress' ? '▶️' : '⏸️';
-    const message = update.message ?? update.error ?? update.step ?? status;
-    if (message) get().addLog(`${emoji} ${message}`);
+    const message = update.message ?? update.error;
+    if (message) get().addLog(message);
 
     // Disconnect WebSocket if job is finished
     if (status === 'completed' || status === 'failed' || status === 'stopped') {
@@ -181,12 +164,11 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   stopJob: async (jobId: string) => {
     try {
       const response = await apiClient.stopJob(jobId);
-      get().addLog('⏹️ 停止请求已发送，等待硬件安全收尾（激光关闭确认后才会真正停止）…');
 
-      // Honest semantics: mark as "stopping" and keep the WebSocket open so the
+      // The backend pushes the stop message; mark as "stopping" and keep the WebSocket open so the
       // backend's real terminal status (stopped/completed/failed) reaches the UI.
       set((state) => ({
-        currentJob: state.currentJob?.id === jobId ? {
+        currentJob: state.currentJob?.id === jobId && isActive(state.currentJob) ? {
           ...state.currentJob,
           status: response.data.status,
         } : state.currentJob,
@@ -198,11 +180,24 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   },
 
   fetchJobs: async () => {
-    try {
-      const response = await apiClient.getJobs();
-      set({ jobs: response.data.map(toJobStatus) });
-    } catch (error) {
-      console.error('Failed to fetch jobs:', error);
+    const previousId = get().currentJob?.id;
+    const response = await apiClient.getJobs();
+    const jobs = response.data.map(toJobStatus);
+    // A response started before a new submission must not replace the new job.
+    if (get().currentJob?.id !== previousId) return;
+    let currentJob = jobs.find((job) => job.id === previousId)
+      ?? jobs.find(isActive)
+      ?? jobs.at(-1)
+      ?? null;
+    const previous = get().currentJob;
+    if (previous && !isActive(previous) && currentJob?.id === previous.id && isActive(currentJob)) {
+      currentJob = previous;
+    }
+    set({ currentJob });
+    if (currentJob && isActive(currentJob) && (!get().wsConnection || currentJob.id !== previousId)) {
+      get().connectWebSocket(currentJob.id);
+    } else if (!currentJob || !isActive(currentJob)) {
+      get().disconnectWebSocket();
     }
   },
 

@@ -1,9 +1,6 @@
-import math
-
 import pytest
 
 from lab_auto.config import ScanPattern
-from lab_auto.errors import ConfigError
 from lab_auto.scan.pattern import measurement_points
 
 
@@ -45,21 +42,6 @@ def test_angle_180_is_negative_x():
     )
     assert pts[1][0] == pytest.approx(5.0 - 10.0)
     assert pts[1][1] == pytest.approx(5.0, abs=1e-9)
-
-
-def test_count_must_match_angles():
-    with pytest.raises(ConfigError):
-        measurement_points((0.0, 0.0), _pattern(surrounding_count=3, surrounding_angles_deg=[0.0, 90.0]))
-
-
-def test_non_positive_distance_raises():
-    with pytest.raises(ConfigError):
-        measurement_points((0.0, 0.0), _pattern(surrounding_distance_um=0.0))
-
-
-def test_repeats_must_be_at_least_two():
-    with pytest.raises(ConfigError):
-        measurement_points((0.0, 0.0), _pattern(repeats_per_point=1))
 
 
 def test_zero_surrounding_points_gives_only_center():

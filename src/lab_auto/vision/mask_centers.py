@@ -1,13 +1,10 @@
 """Extract sample centers from a recognition mask.
 
-Pure stdlib: 4-connected components + centroid. No numpy. The recognition code
-(冯博士) provides only the mask; we own the center-extraction format.
+Pure stdlib: 4-connected components + centroid. No numpy. The external
+recognition program provides only the mask; we own the center-extraction format.
 """
 
-import math
 from dataclasses import dataclass
-
-from lab_auto.errors import ConfigError
 
 
 @dataclass(frozen=True)
@@ -24,39 +21,16 @@ class SampleCenter:
     label: int
 
 
-def _validate(mask):
-    if not isinstance(mask, (list, tuple)):
-        raise ConfigError("mask must be a 2D list/tuple grid")
-    if not mask:
-        return 0, 0
-    # Rows must be sequences but NOT str/bytes: a string row passes len() and its
-    # chars compare != 0, silently reading the whole row as foreground.
-    for row in mask:
-        if not isinstance(row, (list, tuple)):
-            raise ConfigError("mask rows must be lists/tuples of numbers")
-    width = len(mask[0])
-    for row in mask:
-        if len(row) != width:
-            raise ConfigError("mask rows are ragged (unequal length)")
-        if any(
-            not isinstance(value, (int, float))
-            or isinstance(value, float) and not math.isfinite(value)
-            for value in row
-        ):
-            raise ConfigError("mask values must be finite numbers")
-    return len(mask), width
-
-
 def extract_centers(mask, *, min_area: int = 1):
     """Return one :class:`SampleCenter` per 4-connected foreground component.
 
-    ``mask`` is a 2D ``list[list[int]]`` with 0 = background and any nonzero
-    value = foreground. Components smaller than ``min_area`` are dropped.
+    ``mask`` is a rectangular 2D ``list[list[int]]`` (as built by
+    ``recognition.load_mask``) with 0 = background and any nonzero value =
+    foreground. Components smaller than ``min_area`` are dropped.
     Results are sorted deterministically by ``(round(pixel_y), round(pixel_x))``.
     """
-    if isinstance(min_area, bool) or not isinstance(min_area, int) or min_area < 1:
-        raise ConfigError("min_area must be a positive integer")
-    rows, cols = _validate(mask)
+    rows = len(mask)
+    cols = len(mask[0]) if rows else 0
     if rows == 0 or cols == 0:
         return []
 

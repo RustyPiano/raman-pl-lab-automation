@@ -1,10 +1,11 @@
 import csv
 import json
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from lab_auto import __version__
 from lab_auto.config import WorkflowConfig
 from lab_auto.devices.base import close_all_quietly
 from lab_auto.devices.dfield_validation import validate_dfield_capture_args
@@ -12,9 +13,9 @@ from lab_auto.devices.optics_validation import validate_zolix_optics
 from lab_auto.devices.light import ManualLight
 from lab_auto.devices.simulated import SimulatedCamera, SimulatedSpectrometer
 from lab_auto.devices.zolix_spectrometer import direct_to_front_bool
-from lab_auto.errors import ConfigError, SafetyError, WorkflowCancelled
-from lab_auto.logging import append_run_log
+from lab_auto.errors import ConfigError, DeviceError, SafetyError, WorkflowCancelled
 from lab_auto.processing.background import subtract_background
+from lab_auto.storage import append_run_log, write_json
 from lab_auto.workflow.data import CaptureFrame, SpectrumData
 
 
@@ -59,6 +60,15 @@ def read_single_point_result(run_dir: str | Path) -> dict:
     }
 
 
+def _read_status(read) -> dict:
+    # 只为写入元数据而读取的设备状态：读取失败时记录原因，不让已经采完的测量失败
+    # （WayneLabs identify 首响应分包问题尚未修复）
+    try:
+        return read()
+    except Exception as exc:
+        return {"status_error": str(exc)}
+
+
 @dataclass
 class RamanWorkflow:
     config: WorkflowConfig
@@ -67,23 +77,24 @@ class RamanWorkflow:
     spectrometer: object
     light: object
     runtime_mode: str
+    stage: object = None
+    devices_snapshot: dict | None = None
 
     @classmethod
     def dry_run(cls, config: WorkflowConfig) -> "RamanWorkflow":
-        return cls(config, True, SimulatedCamera(), SimulatedSpectrometer(), ManualLight(manual=True), "dry_run")
+        return cls(config, True, SimulatedCamera(), SimulatedSpectrometer(), ManualLight(), "dry_run")
 
     @classmethod
     def simulated(cls, config: WorkflowConfig) -> "RamanWorkflow":
-        return cls(config, False, SimulatedCamera(), SimulatedSpectrometer(), ManualLight(manual=True), "simulated")
+        light = ManualLight()
+        return cls(config, False, SimulatedCamera(light), SimulatedSpectrometer(), light, "simulated")
 
     @classmethod
     def real(cls, config: WorkflowConfig, *, stage, spectrometer, camera, light) -> "RamanWorkflow":
-        workflow = cls(config, False, camera, spectrometer, light, "real")
-        workflow.stage = stage
-        return workflow
+        return cls(config, False, camera, spectrometer, light, "real", stage=stage)
 
     def close(self) -> None:
-        close_all_quietly((getattr(self, "stage", None), self.spectrometer, self.camera, self.light))
+        close_all_quietly((self.stage, self.spectrometer, self.camera, self.light))
 
     def measure_single_point(self, *, require_confirmation: bool) -> list[str]:
         self.validate_single_point_config()
@@ -121,52 +132,52 @@ class RamanWorkflow:
         )
 
     def _frame_to_spectrum(self, frame: CaptureFrame) -> SpectrumData:
-        warnings: list[str] = []
-        try:
-            x = self.spectrometer.pixels_to_waves(
-                turret=0,
-                grating=self.config.optics.grating,
-                center_wavelength_nm=self.config.optics.center_wavelength_nm,
-                width=int(frame.metadata.get("detector_width", frame.width)),
-                count=len(frame.values),
-                bin_x=frame.bin_x,
-            )
-        except Exception:
-            x = []
-            warnings.append("wavelength calibration failed; using pixel_index")
-        if len(x) == len(frame.values):
-            x_axis_type = "wavelength_nm"
-        else:
-            x_axis_type = "pixel_index"
-            x = list(range(len(frame.values)))
-            if not warnings:
-                warnings.append("wavelength calibration unavailable; using pixel_index")
-        saturated = frame.saturated if len(frame.saturated) == len(frame.values) else [False for _ in frame.values]
-        if any(saturated):
-            warnings.append("saturated pixels detected")
+        detector_width = int(frame.metadata.get("detector_width", frame.width))
+        x = self.spectrometer.pixels_to_waves(
+            turret=0,
+            grating=self.config.optics.grating,
+            center_wavelength_nm=self.config.optics.center_wavelength_nm,
+            width=detector_width,
+            count=len(frame.values),
+            bin_x=frame.bin_x,
+        )
+        if len(x) != len(frame.values):
+            raise DeviceError(f"wavelength calibration returned {len(x)} values for {len(frame.values)} pixels")
+        if len(frame.saturated) != len(frame.values):
+            raise DeviceError("saturation flags do not match the captured pixel count")
+        warnings = ["saturated pixels detected"] if any(frame.saturated) else []
         metadata = {
             "read_mode": self.config.acquisition.read_mode,
             "bin_x": frame.bin_x,
             "bin_y": frame.bin_y,
             "roi": frame.roi,
-            "detector_width": int(frame.metadata.get("detector_width", frame.width)),
+            "detector_width": detector_width,
             "detector_height": int(frame.metadata.get("detector_height", frame.height)),
             "grating": self.config.optics.grating,
             "center_wavelength_nm": self.config.optics.center_wavelength_nm,
             "slit_width_um": self.config.optics.slit_width_um,
-            "saturated_count": sum(1 for value in saturated if value),
+            "saturated_count": sum(frame.saturated),
             "saturation_threshold": frame.saturation_threshold,
             "raw_frames_count": frame.raw_frames_count,
             "warnings": warnings,
         }
         return SpectrumData(
-            x_axis_type=x_axis_type,
+            x_axis_type="wavelength_nm",
             x=x,
             intensity_raw=[float(value) for value in frame.values],
             intensity_background=None,
             intensity_corrected=None,
-            saturated=saturated,
+            saturated=frame.saturated,
             metadata=metadata,
+        )
+
+    def _capture(self, should_cancel):
+        return self.camera.capture(
+            read_mode=self.config.acquisition.read_mode,
+            exposure_ms=self.config.acquisition.exposure_ms,
+            gain=self.config.acquisition.gain,
+            frames=self.config.acquisition.frames,
+            should_cancel=should_cancel,
         )
 
     def run_single_point(
@@ -178,6 +189,8 @@ class RamanWorkflow:
         def _check_cancel() -> None:
             if should_cancel is not None and should_cancel():
                 raise WorkflowCancelled("single-point workflow cancelled by stop request")
+
+        confirm = require_confirmation or self.runtime_mode == "real"
 
         print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         print("🔬 开始单点光谱采集流程")
@@ -197,6 +210,8 @@ class RamanWorkflow:
 
         laser_off_after_sample = False
         try:
+            write_json(run_dir / "metadata.json", {**self._run_metadata(timestamp), "status": "running"})
+            append_run_log(run_dir / "run.log", f"{timestamp.isoformat()} single_point_started")
             # Checkpoint: cancel from here on routes through the except path below,
             # which forces the laser off before re-raising.
             _check_cancel()
@@ -213,17 +228,9 @@ class RamanWorkflow:
                 print(f"  - 曝光时间: {self.config.acquisition.exposure_ms} ms")
                 print(f"  - 帧数: {self.config.acquisition.frames}")
                 _check_cancel()
-                self._confirm_laser_off(require_confirmation=require_confirmation or self.runtime_mode == "real")
+                self._confirm_laser_off(require_confirmation=confirm)
                 print("  > 正在采集背景 (激光关闭)...")
-                capture_kwargs = dict(
-                    read_mode=self.config.acquisition.read_mode,
-                    exposure_ms=self.config.acquisition.exposure_ms,
-                    gain=self.config.acquisition.gain,
-                    frames=self.config.acquisition.frames,
-                )
-                if should_cancel is not None:
-                    capture_kwargs["should_cancel"] = should_cancel
-                background_frame = self.camera.capture(**capture_kwargs)
+                background_frame = self._capture(should_cancel)
                 print("✓ 背景采集完成")
             else:
                 print("\n[3/8] 跳过背景采集 (未启用背景扣除)")
@@ -233,31 +240,20 @@ class RamanWorkflow:
             print(f"  - 帧数: {self.config.acquisition.frames}")
             # Checkpoint: last chance before the laser is switched ON.
             _check_cancel()
-            self._confirm_laser_on(require_confirmation=require_confirmation or self.runtime_mode == "real")
+            self._confirm_laser_on(require_confirmation=confirm)
             print("  > 正在采集样品光谱 (激光开启)...")
             _check_cancel()
-            capture_kwargs = dict(
-                read_mode=self.config.acquisition.read_mode,
-                exposure_ms=self.config.acquisition.exposure_ms,
-                gain=self.config.acquisition.gain,
-                frames=self.config.acquisition.frames,
-            )
-            if should_cancel is not None:
-                capture_kwargs["should_cancel"] = should_cancel
-            sample_frame = self.camera.capture(**capture_kwargs)
+            sample_frame = self._capture(should_cancel)
             print("✓ 样品采集完成")
 
             if self.runtime_mode == "real":
-                self._confirm_laser_off(require_confirmation=require_confirmation or self.runtime_mode == "real")
+                self._confirm_laser_off(require_confirmation=confirm)
                 laser_off_after_sample = True
                 print("✓ 激光已关闭")
 
             print("\n[5/8] 处理光谱数据...")
             background = self._frame_to_spectrum(background_frame) if background_frame is not None else None
             raw = self._frame_to_spectrum(sample_frame)
-            if background is not None and (raw.x_axis_type == "pixel_index" or background.x_axis_type == "pixel_index"):
-                background = self._as_pixel_index(background)
-                raw = self._as_pixel_index(raw)
             print("✓ 光谱数据处理完成")
 
             print("\n[6/8] 背景扣除...")
@@ -268,14 +264,14 @@ class RamanWorkflow:
                 print("⊘ 未执行背景扣除")
 
             warnings = list(
-                dict.fromkeys((background.metadata.get("warnings", []) if background is not None else []) + raw.metadata.get("warnings", []))
+                dict.fromkeys((background.metadata["warnings"] if background is not None else []) + raw.metadata["warnings"])
             )
 
             print("\n[7/8] 保存数据文件...")
-            self._write_raw(run_dir / "raw.csv", raw)
+            self._write_spectrum(run_dir / "raw.csv", raw, "intensity_raw")
             print("  ✓ raw.csv")
-            if background is not None and corrected is not None:
-                self._write_background(run_dir / "background.csv", background)
+            if corrected is not None:
+                self._write_spectrum(run_dir / "background.csv", background, "intensity_background")
                 print("  ✓ background.csv")
                 self._write_corrected(run_dir / "corrected.csv", corrected)
                 print("  ✓ corrected.csv")
@@ -294,76 +290,103 @@ class RamanWorkflow:
                     print(f"  - {w}")
             print(f"\n📁 数据已保存至: {run_dir}")
             print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-        except Exception:
+        except BaseException as exc:
             print("\n❌ 采集过程出错!")
-            if not laser_off_after_sample:
-                self._confirm_laser_off_after_failure(require_confirmation=require_confirmation or self.runtime_mode == "real")
+            errors = [f"{type(exc).__name__}: {exc}"]
+            try:
+                if not laser_off_after_sample:
+                    self._confirm_laser_off_after_failure(require_confirmation=confirm)
+            except Exception as safety_exc:
+                exc = safety_exc
+                errors.append(f"{type(exc).__name__}: {exc}")
+                raise
+            finally:
+                status = "stopped" if isinstance(exc, (WorkflowCancelled, KeyboardInterrupt)) else "failed"
+                try:
+                    write_json(run_dir / "metadata.json", {
+                        **self._run_metadata(timestamp),
+                        "status": status,
+                        "completed_at": datetime.now(timezone.utc).isoformat(),
+                        "errors": errors,
+                    })
+                    append_run_log(run_dir / "run.log", f"{status}: {'; '.join(errors)}")
+                except OSError as record_exc:
+                    print(f"Could not save failure record: {record_exc}")
             raise
         return run_dir
 
+    def _run_metadata(self, timestamp: datetime) -> dict:
+        return {
+            "timestamp": timestamp.isoformat(),
+            "sample_id": self.config.sample.id,
+            "operator": self.config.sample.operator,
+            "runtime_mode": self.runtime_mode,
+            "software_version": __version__,
+            "config_snapshot": asdict(self.config),
+            "devices_config_snapshot": self.devices_snapshot,
+            "excitation": {
+                "wavelength_nm": self.config.optics.excitation_wavelength_nm,
+                "power_mw": self.config.optics.laser_power_mw,
+                "source": "operator_supplied",  # no optical power sensor is connected
+            },
+            "warnings": [],
+            "errors": [],
+        }
+
     def _write_metadata(self, path: Path, *, timestamp: datetime, raw: SpectrumData, sample_frame: CaptureFrame, warnings: list[str]) -> None:
-        path.write_text(
-            json.dumps(
-                {
-                    "timestamp": timestamp.isoformat(),
-                    "sample_id": self.config.sample.id,
-                    "operator": self.config.sample.operator,
-                    "x_axis_type": raw.x_axis_type,
-                    "runtime_mode": self.runtime_mode,
-                    "stage_position_um": self._stage_position(),
-                    "devices": {
-                        "stage": self._stage_metadata(),
-                        "spectrometer": self._device_status(self.spectrometer, fallback_type="spectrometer"),
-                        "camera": self._device_status(self.camera, fallback_type="camera"),
-                    },
-                    "spectrometer": {
-                        "grating": self.config.optics.grating,
-                        "center_wavelength_nm": self.config.optics.center_wavelength_nm,
-                        "slit_width_um": self.config.optics.slit_width_um,
-                        "entrance_port": self.config.optics.entrance_port,
-                        "exit_port": self.config.optics.exit_port,
-                    },
-                    "camera": {
-                        "exposure_ms": self.config.acquisition.exposure_ms,
-                        "gain": self.config.acquisition.gain,
-                        "read_mode": self.config.acquisition.read_mode,
-                        "frames": self.config.acquisition.frames,
-                        "bin_x": sample_frame.bin_x,
-                        "bin_y": sample_frame.bin_y,
-                        "roi": sample_frame.roi,
-                        "saturated_count": raw.metadata["saturated_count"],
-                        "saturation_threshold": raw.metadata["saturation_threshold"],
-                        "raw_frames_count": raw.metadata["raw_frames_count"],
-                    },
-                    "background_subtraction": {
-                        "enabled": self.config.acquisition.subtract_background,
-                        "wavelength_tolerance_nm": 1e-6,
-                    },
-                    "warnings": warnings,
-                    "errors": [],
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
+        temperature = None
+        try:
+            temperature = self.camera.temperature_c()
+        except Exception as exc:
+            warnings = [*warnings, f"detector temperature unavailable: {exc}"]
+        write_json(path, {
+            **self._run_metadata(timestamp),
+            "status": "completed",
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "x_axis_type": raw.x_axis_type,
+            "runtime_mode": self.runtime_mode,
+            "stage_position_um": dict(self.stage.ledger.position_um) if self.stage is not None else None,
+            "devices": {
+                "stage": _read_status(self.stage.identify) if self.stage is not None else None,
+                "spectrometer": _read_status(self.spectrometer.status),
+                "camera": _read_status(self.camera.status),
+            },
+            "spectrometer": {
+                "grating": self.config.optics.grating,
+                "center_wavelength_nm": self.config.optics.center_wavelength_nm,
+                "slit_width_um": self.config.optics.slit_width_um,
+                "entrance_port": self.config.optics.entrance_port,
+                "exit_port": self.config.optics.exit_port,
+            },
+            "camera": {
+                "temperature_c": temperature,
+                "exposure_ms": self.config.acquisition.exposure_ms,
+                "gain": self.config.acquisition.gain,
+                "read_mode": self.config.acquisition.read_mode,
+                "frames": self.config.acquisition.frames,
+                "bin_x": sample_frame.bin_x,
+                "bin_y": sample_frame.bin_y,
+                "roi": sample_frame.roi,
+                "saturated_count": raw.metadata["saturated_count"],
+                "saturation_threshold": raw.metadata["saturation_threshold"],
+                "raw_frames_count": raw.metadata["raw_frames_count"],
+            },
+            "background_subtraction": {
+                "enabled": self.config.acquisition.subtract_background,
+                "wavelength_tolerance_nm": 1e-6,
+            },
+            "warnings": warnings,
+            "errors": [],
+        })
 
     def _confirm_laser_off(self, *, require_confirmation: bool) -> None:
-        confirm = getattr(self.light, "confirm_laser_off", None)
-        if confirm is not None:
-            confirm(require_confirmation=require_confirmation)
-        if getattr(self.light, "laser_state", "off_confirmed") != "off_confirmed":
+        self.light.confirm_laser_off(require_confirmation=require_confirmation)
+        if self.light.laser_state != "off_confirmed":
             raise ConfigError("background capture requires laser_state=off_confirmed")
 
-    def _as_pixel_index(self, spectrum: SpectrumData) -> SpectrumData:
-        if spectrum.x_axis_type == "pixel_index":
-            return spectrum
-        return replace(spectrum, x_axis_type="pixel_index", x=list(range(len(spectrum.intensity_raw))))
-
     def _confirm_laser_on(self, *, require_confirmation: bool) -> None:
-        confirm = getattr(self.light, "confirm_laser_on", None)
-        if confirm is not None:
-            confirm(require_confirmation=require_confirmation)
-        if getattr(self.light, "laser_state", "on_confirmed") != "on_confirmed":
+        self.light.confirm_laser_on(require_confirmation=require_confirmation)
+        if self.light.laser_state != "on_confirmed":
             raise ConfigError("sample capture requires laser_state=on_confirmed")
 
     def _confirm_laser_off_after_failure(self, *, require_confirmation: bool) -> None:
@@ -378,114 +401,42 @@ class RamanWorkflow:
                 raise SafetyError("laser-off could not be confirmed after a failure; laser may still be ON") from exc
 
     def _configure_spectrometer(self) -> None:
-        initialize = getattr(self.spectrometer, "initialize", None)
-        if initialize is not None:
-            initialize(entrance_port=self.config.optics.entrance_port, exit_port=self.config.optics.exit_port)
-        set_grating = getattr(self.spectrometer, "set_grating", None)
-        if set_grating is not None:
-            set_grating(self.config.optics.grating)
-        move_to_wavelength_nm = getattr(self.spectrometer, "move_to_wavelength_nm", None)
-        if move_to_wavelength_nm is not None:
-            move_to_wavelength_nm(self.config.optics.center_wavelength_nm)
-        set_slit_width_um = getattr(self.spectrometer, "set_slit_width_um", None)
-        if set_slit_width_um is not None:
-            set_slit_width_um(self.config.optics.slit_width_um)
+        optics = self.config.optics
+        self.spectrometer.initialize(entrance_port=optics.entrance_port, exit_port=optics.exit_port)
+        self.spectrometer.set_grating(optics.grating)
+        self.spectrometer.move_to_wavelength_nm(optics.center_wavelength_nm)
+        self.spectrometer.set_slit_width_um(optics.slit_width_um)
 
-    def _stage_position(self) -> dict | None:
-        stage = getattr(self, "stage", None)
-        ledger = getattr(stage, "ledger", None)
-        positions = getattr(ledger, "position_um", None)
-        if not isinstance(positions, dict) or not positions:
-            return None
-        return {axis: value for axis, value in positions.items()}
-
-    def _stage_metadata(self) -> dict | None:
-        stage = getattr(self, "stage", None)
-        if stage is None:
-            return None
-        identify = getattr(stage, "identify", None)
-        if identify is None:
-            return {"type": stage.__class__.__name__}
-        try:
-            result = identify()
-        except Exception as exc:
-            return {"type": stage.__class__.__name__, "status_error": str(exc)}
-        return result if isinstance(result, dict) else {"type": stage.__class__.__name__, "status": result}
-
-    def _device_status(self, device: object, *, fallback_type: str) -> dict:
-        status = getattr(device, "status", None)
-        if status is None:
-            return {"type": fallback_type}
-        try:
-            result = status()
-        except Exception as exc:
-            return {"type": fallback_type, "status_error": str(exc)}
-        if isinstance(result, dict):
-            return result
-        return {"type": fallback_type, "status": result}
-
-    def _write_raw(self, path: Path, spectrum: SpectrumData) -> None:
+    def _write_spectrum(self, path: Path, spectrum: SpectrumData, column: str) -> None:
         with path.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
-            if spectrum.x_axis_type == "wavelength_nm":
-                writer.writerow(["pixel_index", "wavelength_nm", "intensity_raw", "saturated"])
-                for index, (wave, value, saturated) in enumerate(zip(spectrum.x, spectrum.intensity_raw, spectrum.saturated, strict=True)):
-                    writer.writerow([index, wave, value, str(saturated).lower()])
-            else:
-                writer.writerow(["pixel_index", "intensity_raw", "saturated"])
-                for index, (value, saturated) in enumerate(zip(spectrum.intensity_raw, spectrum.saturated, strict=True)):
-                    writer.writerow([index, value, str(saturated).lower()])
-
-    def _write_background(self, path: Path, spectrum: SpectrumData) -> None:
-        with path.open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.writer(handle)
-            if spectrum.x_axis_type == "wavelength_nm":
-                writer.writerow(["pixel_index", "wavelength_nm", "intensity_background", "saturated"])
-                for index, (wave, value, saturated) in enumerate(zip(spectrum.x, spectrum.intensity_raw, spectrum.saturated, strict=True)):
-                    writer.writerow([index, wave, value, str(saturated).lower()])
-            else:
-                writer.writerow(["pixel_index", "intensity_background", "saturated"])
-                for index, (value, saturated) in enumerate(zip(spectrum.intensity_raw, spectrum.saturated, strict=True)):
-                    writer.writerow([index, value, str(saturated).lower()])
+            writer.writerow(["pixel_index", "wavelength_nm", column, "saturated"])
+            for index, (wave, value, saturated) in enumerate(zip(spectrum.x, spectrum.intensity_raw, spectrum.saturated, strict=True)):
+                writer.writerow([index, wave, value, str(saturated).lower()])
 
     def _write_corrected(self, path: Path, spectrum: SpectrumData) -> None:
         with path.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
-            background_saturated = spectrum.background_saturated or [False for _ in spectrum.x]
-            if spectrum.x_axis_type == "wavelength_nm":
+            writer.writerow(
+                [
+                    "pixel_index",
+                    "wavelength_nm",
+                    "intensity_raw",
+                    "intensity_background",
+                    "intensity_corrected",
+                    "saturated_raw",
+                    "saturated_background",
+                ]
+            )
+            for index, wave in enumerate(spectrum.x):
                 writer.writerow(
                     [
-                        "pixel_index",
-                        "wavelength_nm",
-                        "intensity_raw",
-                        "intensity_background",
-                        "intensity_corrected",
-                        "saturated_raw",
-                        "saturated_background",
+                        index,
+                        wave,
+                        spectrum.intensity_raw[index],
+                        spectrum.intensity_background[index],
+                        spectrum.intensity_corrected[index],
+                        str(spectrum.saturated[index]).lower(),
+                        str(spectrum.background_saturated[index]).lower(),
                     ]
                 )
-                for index, wave in enumerate(spectrum.x):
-                    writer.writerow(
-                        [
-                            index,
-                            wave,
-                            spectrum.intensity_raw[index],
-                            spectrum.intensity_background[index],
-                            spectrum.intensity_corrected[index],
-                            str(spectrum.saturated[index]).lower(),
-                            str(background_saturated[index]).lower(),
-                        ]
-                    )
-            else:
-                writer.writerow(["pixel_index", "intensity_raw", "intensity_background", "intensity_corrected", "saturated_raw", "saturated_background"])
-                for index in range(len(spectrum.x)):
-                    writer.writerow(
-                        [
-                            index,
-                            spectrum.intensity_raw[index],
-                            spectrum.intensity_background[index],
-                            spectrum.intensity_corrected[index],
-                            str(spectrum.saturated[index]).lower(),
-                            str(background_saturated[index]).lower(),
-                        ]
-                    )

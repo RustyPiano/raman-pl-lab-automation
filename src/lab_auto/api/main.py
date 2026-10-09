@@ -6,17 +6,18 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from lab_auto.api.models import HealthResponse
-from lab_auto.api.paths import default_devices_config_path
+from lab_auto.api.paths import default_devices_config_path, job_state_path
 from lab_auto.api.routers import configs, devices, history, system, workflow
 from lab_auto.api.task_queue import task_queue
 from lab_auto.config import load_devices_config
 from lab_auto.devices.factory import DeviceFactory
+from lab_auto.errors import ConfigError, HardwareBusyError, LabAutomationError
 
 # Configure logging
 logging.basicConfig(
@@ -86,6 +87,11 @@ async def lifespan(app: FastAPI):
     _atexit_reset_armed = True
     # Startup
     logger.info("Starting FastAPI application")
+    recovery_error = None
+    try:
+        task_queue.restore_jobs(job_state_path())
+    except (ConfigError, OSError) as exc:
+        recovery_error = exc  # still attempt the safety reset before refusing startup
     # Power-on safety reset: a previous crash may have left a channel
     # (possibly the laser) energized, and this fresh process has no idea.
     # Run off the event loop -- it does real serial IO -- and never let a
@@ -102,6 +108,8 @@ async def lifespan(app: FastAPI):
             "controller / physical switch before running anything.",
             detail,
         )
+    if recovery_error is not None:
+        raise recovery_error
     task_queue.start()
     logger.info("Task queue worker started")
 
@@ -133,14 +141,7 @@ app = FastAPI(
 # CORS configuration for Vite dev server
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",  # Vite default
-        "http://localhost:5174",
-        "http://localhost:3000",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:5174",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],  # Vite dev server
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -153,13 +154,21 @@ app.include_router(workflow.router)
 app.include_router(history.router)
 app.include_router(system.router)
 
-@app.get("/health", response_model=HealthResponse)
-async def health_check():
-    """Health check endpoint."""
-    return HealthResponse(
-        status="ok",
-        timestamp=datetime.now(timezone.utc).isoformat(),
-    )
+
+# 路由内不再逐个捕获：配置/设备/安全错误统一返回 400，硬件忙返回 409，硬件调用超时返回 504
+@app.exception_handler(LabAutomationError)
+async def lab_error_handler(request: Request, exc: LabAutomationError):
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+@app.exception_handler(HardwareBusyError)
+async def hardware_busy_handler(request: Request, exc: HardwareBusyError):
+    return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+
+@app.exception_handler(TimeoutError)
+async def timeout_handler(request: Request, exc: TimeoutError):
+    return JSONResponse(status_code=504, content={"detail": "Hardware call timed out"})
 
 
 @app.get("/api/health", response_model=HealthResponse)

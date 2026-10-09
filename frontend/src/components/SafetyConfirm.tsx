@@ -59,7 +59,7 @@ export function SafetyConfirm({ open, onOpenChange, onConfirm }: SafetyConfirmPr
             激光安全确认
           </AlertDialogTitle>
           <AlertDialogDescription>
-            真机任务将开启激光。逐项确认后才能继续；软件急停不能替代物理急停开关。
+            真机测量会开启激光，请逐项确认。
           </AlertDialogDescription>
         </AlertDialogHeader>
 

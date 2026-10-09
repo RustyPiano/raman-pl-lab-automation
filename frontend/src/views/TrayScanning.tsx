@@ -92,7 +92,7 @@ export function TrayScanning() {
       const response = await apiClient.previewTray(selectedConfig);
       setPreview(response.data);
       setSelectedWafer(response.data.wafers[0]?.index ?? null);
-      toast.success('托盘安全预演已更新');
+      toast.success('预演已更新');
     } catch (previewError) {
       setError(getErrorMessage(previewError));
       toast.error(`生成预演失败：${getErrorMessage(previewError)}`);
@@ -117,23 +117,16 @@ export function TrayScanning() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div className="flex flex-col gap-1">
           <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">托盘扫描</h1>
-          <p className="max-w-2xl text-sm text-muted-foreground sm:text-base">验证托盘几何、测点图案和动作顺序，不触碰任何真实硬件。</p>
+          <p className="max-w-2xl text-sm text-muted-foreground sm:text-base">
+            预览托盘路径、测点和动作顺序，不连接设备。真机扫描用命令行 <code>ramanctl scan tray --real</code>。
+          </p>
         </div>
-        <Badge variant="secondary" className="w-fit">仅安全预演</Badge>
+        <Badge variant="secondary" className="w-fit">预演</Badge>
       </div>
-
-      <Alert>
-        <ShieldAlert aria-hidden="true" />
-        <AlertTitle>真实托盘扫描暂未开放</AlertTitle>
-        <AlertDescription>
-          相机到识别掩码的链路及现场标定尚未接通。当前页面只生成确定性的 dry-run 计划，不会移动位移台或开启光源。
-        </AlertDescription>
-      </Alert>
 
       <Card>
         <CardHeader>
           <CardTitle>预演配置</CardTitle>
-          <CardDescription>只列出已通过完整托盘配置校验的 YAML 文件。</CardDescription>
         </CardHeader>
         <CardContent>
           <FieldGroup>
@@ -147,14 +140,14 @@ export function TrayScanning() {
                   </SelectGroup>
                 </SelectContent>
               </Select>
-              <FieldDescription>预演使用一个固定模拟样品中心，用于检查完整动作数量和顺序。</FieldDescription>
+              <FieldDescription>每片晶圆按一个模拟样品计算。</FieldDescription>
             </Field>
           </FieldGroup>
         </CardContent>
         <CardFooter>
           <Button onClick={() => void handlePreview()} disabled={!selectedConfig || generating}>
             <RefreshCw data-icon="inline-start" />
-            {generating ? '正在生成…' : '生成安全预演'}
+            {generating ? '正在生成…' : '生成预演'}
           </Button>
         </CardFooter>
       </Card>
@@ -281,7 +274,7 @@ export function TrayScanning() {
               <EmptyHeader>
                 <EmptyMedia variant="icon"><LayoutGrid /></EmptyMedia>
                 <EmptyTitle>没有可用的托盘配置</EmptyTitle>
-                <EmptyDescription>请先完成并校验一个托盘扫描 YAML 配置；含占位符的真机模板不会出现在这里。</EmptyDescription>
+                <EmptyDescription>在 configs/ 下放一个填写完整的托盘扫描配置。</EmptyDescription>
               </EmptyHeader>
             </Empty>
           </CardContent>

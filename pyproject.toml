@@ -10,6 +10,7 @@ requires-python = ">=3.11"
 dependencies = [
   "PyYAML>=6.0.1",
   "pyserial>=3.5",
+  "pillow",
 ]
 
 [project.optional-dependencies]
@@ -21,13 +22,6 @@ dev = [
 api = [
   "fastapi>=0.110",
   "uvicorn[standard]>=0.29",
-]
-# Pillow-backed imaging: nncam wafer capture (lab_auto.devices.nncam_camera) and
-# decoding the delivered recognition masks (lab_auto.vision.recognition). Both
-# import PIL lazily; install this extra on the lab/inference machine. The nncam
-# binding itself is vendored (nncamsdk.../python), not a pip package.
-recognition = [
-  "pillow",
 ]
 
 [project.scripts]

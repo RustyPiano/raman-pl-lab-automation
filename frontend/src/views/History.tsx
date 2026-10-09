@@ -72,7 +72,7 @@ function persistedRow(record: HistoryRecord): HistoryRow {
     sampleId: record.sample_id,
     operator: record.operator,
     mode: record.mode,
-    error: null,
+    error: record.error,
     files: record.files,
     result: null,
   };
@@ -87,7 +87,7 @@ function jobRow(job: ApiJobStatus): HistoryRow {
     createdAt: job.created_at,
     sampleId: job.result?.metadata.sample_id ?? null,
     operator: job.result?.metadata.operator ?? null,
-    mode: job.result?.mode ?? 'unknown',
+    mode: job.mode ?? job.result?.mode ?? 'unknown',
     error: job.error ?? null,
     files: [],
     result: job.result ?? null,
@@ -184,7 +184,7 @@ export function History() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div className="flex flex-col gap-1">
           <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">历史记录</h1>
-          <p className="max-w-2xl text-sm text-muted-foreground sm:text-base">查看当前会话任务与磁盘中已持久化的测量结果，并下载原始输出文件。</p>
+          <p className="max-w-2xl text-sm text-muted-foreground sm:text-base">查看测量结果和失败记录，下载输出文件。</p>
         </div>
         <Button variant="outline" onClick={() => void loadHistory()} disabled={refreshing}>
           <RefreshCw data-icon="inline-start" />
@@ -326,7 +326,7 @@ export function History() {
             </Card>
 
             {detailError && <Alert variant="destructive"><TriangleAlert aria-hidden="true" /><AlertTitle>光谱读取失败</AlertTitle><AlertDescription>{detailError}</AlertDescription></Alert>}
-            {detailLoading ? <Skeleton className="h-[460px]" /> : detail ? (
+            {detailLoading ? <Skeleton className="h-[460px]" /> : detail?.spectrum.raw.length ? (
               <Suspense fallback={<Skeleton className="h-[460px]" />}><SpectrumChart result={detail} /></Suspense>
             ) : selected ? (
               <Card><CardContent className="pt-6"><Empty><EmptyHeader><EmptyMedia variant="icon"><Activity /></EmptyMedia><EmptyTitle>暂无光谱结果</EmptyTitle><EmptyDescription>任务完成并写入结果后可查看光谱。</EmptyDescription></EmptyHeader></Empty></CardContent></Card>

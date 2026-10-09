@@ -11,8 +11,8 @@ from lab_auto.devices.raw import pwm_modbus as mb
 from lab_auto.errors import DeviceError
 
 
-LASER = PwmChannel(channel=2, frequency_hz=1000, duty_percent=5.0, default_off_required=True)
-LED = PwmChannel(channel=1, frequency_hz=1000, duty_percent=5.0, default_off_required=True)
+LASER = PwmChannel(channel=2, frequency_hz=1000, duty_percent=5.0)
+LED = PwmChannel(channel=1, frequency_hz=1000, duty_percent=5.0)
 
 CONFIG = LightConfig(
     type="pwm_modbus",
@@ -97,7 +97,7 @@ class _Slave:
 
 
 def _adapter(slave):
-    return PwmModbusLight(CONFIG, transport=slave, dry_run=False)
+    return PwmModbusLight(CONFIG, transport=slave)
 
 
 # --- de-sync self-heal at the single-exchange level --------------------
@@ -153,7 +153,7 @@ def test_read_exact_times_out_on_slow_byte_drip(monkeypatch):
         def read(self, n):
             return b"\x00"  # one byte per read, never completing the frame
 
-    light = PwmModbusLight(CONFIG, transport=DripTransport(), dry_run=False)
+    light = PwmModbusLight(CONFIG, transport=DripTransport())
 
     # Deadline must be checked even while bytes keep arriving; otherwise this loops
     # forever. It is raised as DeviceError (via _ExchangeError).
@@ -163,15 +163,15 @@ def test_read_exact_times_out_on_slow_byte_drip(monkeypatch):
 
 # --- whole-sweep off-retry --------------------------------------------
 
-def test_laser_off_recovers_when_first_sweep_fails_then_flush_clears():
+def test_safety_reset_recovers_when_first_sweep_fails_then_retry_clears():
     # The laser output-state register ignores the first off-write (de-synced sweep)
-    # and accepts it only after the sweep-level flush+retry.
+    # and accepts it only after the sweep-level retry.
     laser_reg = mb.output_state_register(LASER.channel)
     regs = {**_healthy_registers(), laser_reg: 1}
     slave = _Slave(registers=regs, heal_reg=laser_reg, heal_after=1)
     light = _adapter(slave)
 
-    light.laser_off()
+    light.safety_reset()
 
     assert light.laser_state == "off_confirmed"
     assert slave.registers[laser_reg] == 0
@@ -193,19 +193,9 @@ def test_read_hardware_state_reads_registers_without_writing_channels():
     assert not [f for f in slave.requests if f[1] == mb.WRITE_SINGLE]
 
 
-def test_read_hardware_state_dry_run_returns_software_state():
-    slave = _Slave(registers={})
-    light = PwmModbusLight(CONFIG, transport=slave, dry_run=True)
-
-    assert light.read_hardware_state() == {"laser_state": "unknown", "led_state": "unknown"}
-    assert slave.requests == []
-
-
 def test_read_hardware_state_allows_optional_led_mapping():
     slave = _Slave(registers=_healthy_registers())
-    light = PwmModbusLight(
-        replace(CONFIG, channels={"laser": LASER}), transport=slave, dry_run=False
-    )
+    light = PwmModbusLight(replace(CONFIG, channels={"laser": LASER}), transport=slave)
 
     state = light.read_hardware_state()
 
@@ -275,7 +265,7 @@ def test_safety_reset_raises_when_channel_cannot_be_confirmed_off():
     slave = StuckSlave(registers={**_healthy_registers(), laser_reg: 1})
     light = _adapter(slave)
 
-    with pytest.raises(DeviceError, match="safety reset"):
+    with pytest.raises(DeviceError, match="confirm channels OFF"):
         light.safety_reset()
     assert light.laser_state == "manual_wait"
 
@@ -297,13 +287,3 @@ def test_safety_reset_fails_for_unconfigured_physical_channel():
 
     with pytest.raises(DeviceError, match="channel"):
         light.safety_reset()
-
-
-def test_safety_reset_dry_run_marks_off_without_io():
-    slave = _Slave(registers={})
-    light = PwmModbusLight(CONFIG, transport=slave, dry_run=True)
-
-    light.safety_reset()
-
-    assert light.laser_state == "off_confirmed"
-    assert slave.requests == []

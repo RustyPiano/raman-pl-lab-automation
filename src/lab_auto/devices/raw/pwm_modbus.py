@@ -5,7 +5,7 @@ the 5.0 V hard cap, and byte-level frame build/parse. It performs no I/O and
 imports neither ``serial`` nor ``time``. Adapters call these helpers; nothing
 above this layer hand-writes Modbus bytes.
 
-Register map (spec 6.5):
+Register map (from the vendor protocol document):
 - Reg0          reserved, read-only.
 - Reg1          global output voltage, unit 0.1 V (hard max 5.0 V == 50 == 0x0032).
 - Reg2-Reg11    CH1-CH5 frequency, per channel (hi << 16 | lo), 32-bit Hz.
@@ -16,7 +16,6 @@ Register map (spec 6.5):
 """
 
 import math
-from dataclasses import dataclass
 
 
 class ProtocolError(ValueError):

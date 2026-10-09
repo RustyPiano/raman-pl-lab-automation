@@ -1,9 +1,8 @@
 from pathlib import Path
 
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from lab_auto.api.routers import workflow
+from lab_auto.api.main import app
 
 
 def test_tray_preview_returns_validated_geometry_and_plan(tmp_path, monkeypatch):
@@ -11,8 +10,6 @@ def test_tray_preview_returns_validated_geometry_and_plan(tmp_path, monkeypatch)
     config_text = source.read_text(encoding="utf-8").replace("min_area: 5", "min_area: 10")
     (tmp_path / "tray.yaml").write_text(config_text, encoding="utf-8")
     monkeypatch.setenv("LAB_AUTO_CONFIG_DIR", str(tmp_path))
-    app = FastAPI()
-    app.include_router(workflow.router)
 
     response = TestClient(app).post("/api/workflow/tray/preview", json={"config_path": "tray.yaml"})
 
@@ -44,8 +41,6 @@ def test_tray_preview_rejects_unsafe_single_point_settings(tmp_path, monkeypatch
     config_text = source.read_text(encoding="utf-8").replace("exposure_ms: 1000", "exposure_ms: -1")
     (tmp_path / "tray.yaml").write_text(config_text, encoding="utf-8")
     monkeypatch.setenv("LAB_AUTO_CONFIG_DIR", str(tmp_path))
-    app = FastAPI()
-    app.include_router(workflow.router)
 
     response = TestClient(app).post("/api/workflow/tray/preview", json={"config_path": "tray.yaml"})
 
@@ -59,8 +54,6 @@ def test_tray_preview_rejects_path_outside_config_root(tmp_path, monkeypatch):
     outside = tmp_path / "tray.yaml"
     outside.write_text("tray: {}\n", encoding="utf-8")
     monkeypatch.setenv("LAB_AUTO_CONFIG_DIR", str(config_root))
-    app = FastAPI()
-    app.include_router(workflow.router)
 
     response = TestClient(app).post(
         "/api/workflow/tray/preview",

@@ -61,14 +61,14 @@ export function App() {
     try {
       const { data } = await apiClient.emergencyStop();
       if (data.laser_off.startsWith('failed')) {
-        toast.error(data.message ?? '软件无法确认激光已关闭，请立即使用物理急停开关');
+        toast.error(`激光未能确认关闭，请使用物理急停：${data.laser_off}`);
       } else {
-        const lightStatus = data.laser_off === 'confirmed' ? '已确认关闭' : data.laser_off === 'not_applicable' ? '无需软件控制' : data.laser_off;
-        toast.success(`急停已执行：取消 ${data.jobs_cancelled.length} 个任务，光源${lightStatus}`);
+        const lightStatus = data.laser_off === 'confirmed' ? '已关闭' : '为人工控制，请手动关闭';
+        toast.success(`已取消 ${data.jobs_cancelled.length} 个任务，光源${lightStatus}`);
       }
       setShowEmergencyDialog(false);
     } catch (error) {
-      toast.error(`软件急停请求失败：${getErrorMessage(error)}。请立即使用物理急停开关。`);
+      toast.error(`急停请求失败，请使用物理急停：${getErrorMessage(error)}`);
     } finally {
       setIsStopping(false);
     }
@@ -123,7 +123,6 @@ export function App() {
             <OctagonAlert data-icon="inline-start" />
             软件急停
           </Button>
-          <p className="text-xs leading-relaxed text-muted-foreground">软件急停不能替代实验台物理急停。</p>
         </div>
       </aside>
 
@@ -155,8 +154,7 @@ export function App() {
           <Outlet />
         </main>
 
-        <footer className="hidden border-t bg-card px-8 py-3 text-xs text-muted-foreground lg:flex lg:items-center lg:justify-between">
-          <span>本地实验控制 · 默认安全模式</span>
+        <footer className="hidden border-t bg-card px-8 py-3 text-xs text-muted-foreground lg:flex lg:justify-end">
           <span>v0.1.0</span>
         </footer>
       </div>
@@ -190,7 +188,7 @@ export function App() {
               执行软件急停？
             </AlertDialogTitle>
             <AlertDialogDescription>
-              系统会取消所有未完成任务并尝试关闭全部光源。若软件无法确认激光已关闭，请立即使用实验台物理急停开关。
+              取消所有未完成任务，并关闭全部光源。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

@@ -57,8 +57,6 @@ export interface ConfigListResponse {
 
 export interface JobProgress {
   current_step: string | null;
-  total_steps: number | null;
-  completed_steps: number;
   message: string | null;
   percentage: number | null;
 }
@@ -66,6 +64,7 @@ export interface JobProgress {
 export interface ApiJobStatus {
   id: string;
   type: string;
+  mode?: RunMode | null;
   status: JobState;
   progress: JobProgress;
   created_at: string;
@@ -78,6 +77,7 @@ export interface ApiJobStatus {
 export interface JobStatus {
   id: string;
   type: string;
+  mode?: RunMode | null;
   status: ApiJobStatus['status'];
   progress: number;
   current_step?: string | null;
@@ -89,14 +89,10 @@ export interface JobStatus {
 }
 
 export interface ProgressUpdate {
-  type: 'status' | 'progress' | 'error' | 'pong';
+  type: 'status' | 'error';
   status?: ApiJobStatus['status'];
   progress?: JobProgress;
-  step?: string;
-  completed?: number;
-  total?: number;
-  message?: string;
-  percentage?: number | null;
+  message?: string | null;
   result?: SpectrumResult | null;
   error?: string;
 }
@@ -177,9 +173,10 @@ export interface HistoryRecord {
   id: string;
   source: 'measurement';
   type: 'single_point';
-  status: 'completed';
+  status: 'completed' | 'failed' | 'stopped';
+  error: string | null;
   created_at: string;
-  completed_at: string;
+  completed_at: string | null;
   sample_id: string | null;
   operator: string | null;
   mode: string;
@@ -195,20 +192,14 @@ export interface HistoryDetail {
 export interface EmergencyStopResponse {
   jobs_cancelled: string[];
   laser_off: string;
-  message?: string;
 }
 
 export const apiClient = {
   getHealth: () => api.get<{ status: string; timestamp: string }>('/health'),
 
-  // 获取所有配置
   getConfigs: (configType: ConfigType = 'single_point') =>
     api.get<ConfigListResponse>('/configs', { params: { config_type: configType } }),
 
-  // 获取特定配置
-  getConfig: (name: string) => api.get<{ name: string; content: string }>(`/configs/${name}`),
-
-  // 启动单点测量
   startSinglePoint: (data: {
     config_path: string;
     devices_path?: string;
@@ -216,13 +207,8 @@ export const apiClient = {
     confirm_real?: boolean;
   } & SinglePointOverrides) => api.post<ApiJobStatus>('/workflow/single-point', data),
 
-  // 获取任务状态
-  getJobStatus: (jobId: string) => api.get<ApiJobStatus>(`/workflow/jobs/${jobId}`),
-
-  // 停止任务
   stopJob: (jobId: string) => api.post<{ status: JobState; job_id: string }>(`/workflow/jobs/${jobId}/stop`),
 
-  // 获取所有任务
   getJobs: () => api.get<ApiJobStatus[]>('/workflow/jobs'),
 
   previewTray: (configPath: string) =>

@@ -1,5 +1,4 @@
 """Workflow execution API endpoints."""
-import logging
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, WebSocketException
 
 from lab_auto.api.models import JobStatus, SinglePointRequest, TrayPreviewRequest, TrayPreviewResponse
@@ -7,8 +6,8 @@ from lab_auto.api.paths import resolve_config_path
 from lab_auto.api.task_queue import task_queue
 from lab_auto.api.websocket import manager
 from lab_auto.config import (
+    load_devices_config,
     load_tray_scan_config,
-    load_workflow_and_devices,
     load_workflow_config,
     validate_sample_id,
     workflow_config_from_tray_scan,
@@ -18,30 +17,22 @@ from lab_auto.scan.tray import wafer_centers
 from lab_auto.workflow.raman import RamanWorkflow
 from lab_auto.workflow.tray_scan import TrayScanWorkflow, simulated_mask_provider
 
-logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/workflow", tags=["workflow"])
 
 
 @router.post("/tray/preview", response_model=TrayPreviewResponse)
 async def preview_tray_scan(request: TrayPreviewRequest):
     """Validate and plan a tray scan without opening devices or moving hardware."""
-    try:
-        config_path = resolve_config_path(request.config_path)
-        if not config_path.is_file():
-            raise HTTPException(status_code=404, detail=f"Config not found: {request.config_path}")
-        config = load_tray_scan_config(config_path)
-        RamanWorkflow.dry_run(
-            workflow_config_from_tray_scan(config)
-        ).validate_single_point_config()
-        wafers = wafer_centers(config.tray)
-        actions = TrayScanWorkflow.dry_run(
-            config,
-            mask_provider=simulated_mask_provider(config.min_area),
-        ).plan()
-    except HTTPException:
-        raise
-    except ConfigError as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid tray configuration: {exc}")
+    config_path = resolve_config_path(request.config_path)
+    if not config_path.is_file():
+        raise HTTPException(status_code=404, detail=f"Config not found: {request.config_path}")
+    config = load_tray_scan_config(config_path)
+    RamanWorkflow.dry_run(workflow_config_from_tray_scan(config)).validate_single_point_config()
+    wafers = wafer_centers(config.tray)
+    actions = TrayScanWorkflow.dry_run(
+        config,
+        mask_provider=simulated_mask_provider(config.min_area),
+    ).plan()
 
     return TrayPreviewResponse(
         config_path=request.config_path,
@@ -81,88 +72,61 @@ async def preview_tray_scan(request: TrayPreviewRequest):
         },
         real_available=False,
         real_unavailable_reason=(
-            "Real tray scan requires a camera-to-recognition mask provider and verified "
-            "hardware calibration; neither is wired into the Web workflow yet."
+            "Supervised real tray scan is available through the CLI file handshake. "
+            "The Web entry remains disabled until optical-path control and on-rig calibration are verified."
         ),
     )
 
 
 @router.post("/single-point", response_model=JobStatus)
 async def start_single_point(request: SinglePointRequest):
-    """Start a single-point Raman measurement."""
-    try:
-        if request.confirm_real and request.mode != "real":
-            raise HTTPException(
-                status_code=400,
-                detail="confirm_real=true is only valid in real mode",
-            )
-        if request.mode == "real" and not request.confirm_real:
-            raise HTTPException(status_code=400, detail="Real mode requires confirm_real=true")
+    """Start a single-point Raman measurement.
 
-        try:
-            config_path = resolve_config_path(request.config_path)
-        except ConfigError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-        if not config_path.exists():
-            raise HTTPException(status_code=404, detail=f"Config not found: {request.config_path}")
+    This is the only entry into the hardware queue, so the real-mode
+    confirmation and the overrides are validated here once.
+    """
+    if request.confirm_real and request.mode != "real":
+        raise HTTPException(status_code=400, detail="confirm_real=true is only valid in real mode")
+    if request.mode == "real" and not request.confirm_real:
+        raise HTTPException(status_code=400, detail="Real mode requires confirm_real=true")
 
-        try:
-            workflow_config = load_workflow_config(config_path)
-            devices_path = resolve_config_path(request.devices_path or workflow_config.devices_config)
-        except ConfigError as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid configuration: {exc}")
-        if not devices_path.exists():
-            raise HTTPException(status_code=404, detail=f"Devices config not found: {devices_path.name}")
+    config_path = resolve_config_path(request.config_path)
+    if not config_path.exists():
+        raise HTTPException(status_code=404, detail=f"Config not found: {request.config_path}")
+    workflow_config = load_workflow_config(config_path)
+    devices_path = resolve_config_path(request.devices_path or workflow_config.devices_config)
+    if not devices_path.exists():
+        raise HTTPException(status_code=404, detail=f"Devices config not found: {devices_path.name}")
+    devices_config = load_devices_config(devices_path)
+    RamanWorkflow.dry_run(workflow_config).validate_single_point_config()
+    sample_id = validate_sample_id(request.sample_id.strip()) if request.sample_id is not None else None
+    operator = request.operator.strip() if request.operator is not None else None
+    if operator == "":
+        raise ConfigError("operator override cannot be empty")
 
-        try:
-            _, devices_config = load_workflow_and_devices(
-                config_path, devices_override=devices_path
-            )
-            RamanWorkflow.dry_run(workflow_config).validate_single_point_config()
-            if request.sample_id is not None:
-                validate_sample_id(request.sample_id.strip())
-            if request.operator is not None and not request.operator.strip():
-                raise ConfigError("operator override cannot be empty")
-        except ConfigError as e:
-            raise HTTPException(status_code=400, detail=f"Invalid configuration: {e}")
-
-        # Reject a manual light source up front: its terminal confirmation prompt
-        # would hang the server thread. Web real mode needs programmatic control.
-        if request.mode == "real" and devices_config.light.type == "manual":
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Web API real mode requires a pwm_modbus light source; a manual light "
-                    "needs terminal confirmation which would hang the server"
-                ),
-            )
-
-        # Create job
-        job_id = task_queue.create_job("single_point")
-
-        # Submit to queue
-        await task_queue.submit_single_point(
-            job_id=job_id,
-            config_path=str(config_path),
-            devices_path=str(devices_path),
-            mode=request.mode,
-            confirm_real=request.confirm_real,
-            sample_id=request.sample_id,
-            operator=request.operator,
-            subtract_background=request.subtract_background,
+    # Reject a manual light source up front: its terminal confirmation prompt
+    # would hang the server thread. Web real mode needs programmatic control.
+    if request.mode == "real" and devices_config.light.type == "manual":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Web API real mode requires a pwm_modbus light source; a manual light "
+                "needs terminal confirmation which would hang the server"
+            ),
         )
 
-        job = task_queue.get_job(job_id)
-        if not job:
-            raise HTTPException(status_code=500, detail="Failed to create job")
-
-        return job
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("Error starting single-point measurement")
-        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+    job_id = task_queue.create_job("single_point")
+    await task_queue.submit_single_point(
+        job_id=job_id,
+        config_path=str(config_path),
+        devices_path=str(devices_path),
+        mode=request.mode,
+        confirm_real=request.confirm_real,
+        sample_id=sample_id,
+        operator=operator,
+        subtract_background=request.subtract_background,
+    )
+    return task_queue.get_job(job_id)
 
 
 @router.get("/jobs", response_model=list[JobStatus])
@@ -191,8 +155,7 @@ async def stop_job(job_id: str):
     success = await task_queue.stop_job(job_id)
     if not success:
         raise HTTPException(status_code=400, detail="Job cannot be stopped (not found or already completed)")
-    job = task_queue.get_job(job_id)
-    return {"status": job.status if job else "stopping", "job_id": job_id}
+    return {"status": task_queue.get_job(job_id).status, "job_id": job_id}
 
 
 @router.websocket("/ws/jobs/{job_id}")
@@ -203,7 +166,6 @@ async def websocket_job_progress(websocket: WebSocket, job_id: str):
         raise WebSocketException(code=4404, reason="Job not found")
     await manager.connect(websocket, job_id)
     try:
-        # Send initial job status
         await websocket.send_json({
             "type": "status",
             "status": job.status,
@@ -211,18 +173,10 @@ async def websocket_job_progress(websocket: WebSocket, job_id: str):
             "result": job.result,
             "error": job.error,
         })
-
-        # Keep connection alive and wait for messages
+        # 客户端不发送消息；持续接收只是为了感知断开
         while True:
-            try:
-                # Receive messages (for keepalive/ping)
-                data = await websocket.receive_text()
-                if data == "ping":
-                    await websocket.send_json({"type": "pong"})
-            except WebSocketDisconnect:
-                break
-
-    except Exception as e:
-        logger.error(f"WebSocket error for job {job_id}: {e}")
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
     finally:
-        await manager.disconnect(websocket, job_id)
+        manager.disconnect(websocket, job_id)

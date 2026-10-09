@@ -3,14 +3,13 @@
 Pure-orchestration over injected devices: a stage (WayneLabs-shaped), a
 ``point_measurer`` (per-point single-point Raman primitive), and a
 ``mask_provider`` (capture + recognition on hardware; a fixture in tests).
-Composes the pure M2 modules (mask centers, affine calibration, tray geometry,
-scan pattern, burn check). Writes an interruptible/resumable manifest.
+Composes the pure helpers in ``vision/``, ``scan/`` and ``processing/`` (mask
+centers, affine calibration, tray geometry, scan pattern, burn check). Writes an interruptible/resumable manifest.
 """
 
 import hashlib
 import json
 import math
-import os
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -19,8 +18,10 @@ from lab_auto.errors import ConfigError, SafetyError, WorkflowCancelled
 from lab_auto.processing.burn_check import compare_spectra
 from lab_auto.scan.pattern import measurement_points
 from lab_auto.scan.tray import wafer_centers
+from lab_auto.storage import write_json
 from lab_auto.vision.calibration import pixel_to_stage_delta
 from lab_auto.vision.mask_centers import SampleCenter, extract_centers
+from lab_auto.vision.recognition import FileMaskProvider
 
 _HOMED_STATES = ("homed", "user_zeroed")
 
@@ -65,10 +66,7 @@ class TrayScanWorkflow:
     def close(self) -> None:
         # The point measurer owns the shared device teardown (stage, spectrometer,
         # camera, light); closing the stage here too would double-close it.
-        for device in (self.point_measurer, self.mask_provider):
-            close = getattr(device, "close", None)
-            if close is not None:
-                close()
+        self.point_measurer.close()
 
     # -- geometry helpers ------------------------------------------------
 
@@ -87,12 +85,10 @@ class TrayScanWorkflow:
         Centroids come out in mask-pixel coordinates and are mapped to stage µm by
         ``pixel_to_stage_delta`` using ``calibration.image_center``. If the mask is
         a different resolution (e.g. the model resized the image), every centroid
-        maps to the wrong physical point and the laser is driven off-target. Only
-        enforceable when the calibration declares its capture size (opt-in).
+        maps to the wrong physical point and the laser is driven off-target. ``run``
+        has already required the calibrated capture size.
         """
         calib = self.config.calibration
-        if calib.image_width_px is None or calib.image_height_px is None:
-            return  # pixel space not declared — recommend declaring it for real runs
         height = len(mask)
         width = len(mask[0]) if height else 0
         if width != calib.image_width_px or height != calib.image_height_px:
@@ -127,10 +123,10 @@ class TrayScanWorkflow:
 
     def _assert_stage_ready(self) -> None:
         for axis in ("x", "y"):
+            # AxisState 是 str 枚举，可以直接和字符串比较
             state = self.stage.ledger.states.get(axis)
-            value = getattr(state, "value", state)
-            if value not in _HOMED_STATES:
-                raise SafetyError(f"tray scan requires stage axis {axis} homed/user_zeroed, got {value!r}")
+            if state not in _HOMED_STATES:
+                raise SafetyError(f"tray scan requires stage axis {axis} homed/user_zeroed, got {state!r}")
 
     def _within_limits(self, x: float, y: float) -> bool:
         limits = self.stage.config.soft_limits_um
@@ -163,6 +159,10 @@ class TrayScanWorkflow:
             if should_cancel is not None and should_cancel():
                 raise WorkflowCancelled("tray scan cancelled by stop request")
 
+        if self.config.calibration.image_width_px is None or self.config.calibration.image_height_px is None:
+            raise SafetyError("real tray scan requires calibrated image_width_px and image_height_px")
+        if isinstance(self.mask_provider, FileMaskProvider):
+            self.mask_provider.should_cancel = should_cancel
         self._assert_stage_ready()
         self.config.output.directory.mkdir(parents=True, exist_ok=True)
         manifest_path = self.config.output.directory / "manifest.json"
@@ -217,6 +217,8 @@ class TrayScanWorkflow:
                 for c in persisted
             ]
         centers = self._centers_for(wafer, verify_space=True)
+        if isinstance(self.mask_provider, FileMaskProvider):
+            wafer_entry["recognition"] = self.mask_provider.last_receipt
         for center in centers:
             sx, sy = self._sample_xy(wafer, center)
             self._center_entry(wafer_entry, center, sx, sy)  # persist before measuring any point
@@ -256,12 +258,7 @@ class TrayScanWorkflow:
         deviation = 0.0
         burned = False
         for a, b in zip(spectra, spectra[1:]):
-            result = compare_spectra(
-                a,
-                b,
-                metric=self.config.pattern.burn_metric,
-                threshold=self.config.pattern.burn_threshold,
-            )
+            result = compare_spectra(a, b, threshold=self.config.pattern.burn_threshold)
             deviation = max(deviation, result["deviation"])
             burned = burned or result["burned"]
         return {"deviation": deviation, "burned": burned}
@@ -276,12 +273,10 @@ class TrayScanWorkflow:
         """
         c = self.config
         devices_path = c.devices_config.resolve()
-        try:
-            devices_digest = hashlib.sha256(devices_path.read_bytes()).hexdigest()
-        except OSError:
-            devices_digest = None
+        devices_digest = hashlib.sha256(devices_path.read_bytes()).hexdigest()
         return {
             "runtime_mode": self.runtime_mode,
+            "recognition": getattr(self.mask_provider, "identity", None),
             "devices_config": [str(devices_path), devices_digest],
             "sample": [c.sample.id, c.sample.operator],
             "optics": [
@@ -290,6 +285,8 @@ class TrayScanWorkflow:
                 c.optics.grating,
                 c.optics.center_wavelength_nm,
                 c.optics.slit_width_um,
+                c.optics.excitation_wavelength_nm,
+                c.optics.laser_power_mw,
             ],
             "acquisition": [
                 c.acquisition.exposure_ms,
@@ -298,7 +295,6 @@ class TrayScanWorkflow:
                 c.acquisition.frames,
                 c.acquisition.subtract_background,
             ],
-            "output_formats": list(c.output.formats),
             "tray": [c.tray.rows, c.tray.cols, c.tray.pitch_x_um, c.tray.pitch_y_um,
                      c.tray.first_cell_offset_x_um, c.tray.first_cell_offset_y_um, c.tray.order],
             "calibration": [c.calibration.objective,
@@ -308,6 +304,7 @@ class TrayScanWorkflow:
             "pattern": [c.pattern.repeats_per_point, c.pattern.surrounding_count,
                         c.pattern.surrounding_distance_um, list(c.pattern.surrounding_angles_deg),
                         c.pattern.burn_metric, c.pattern.burn_threshold],
+            "burn_input": "corrected" if c.acquisition.subtract_background else "raw",
             "min_area": c.min_area,
             "on_out_of_range": c.on_out_of_range,
         }
@@ -375,9 +372,4 @@ class TrayScanWorkflow:
         return entry
 
     def _write_manifest(self, path, manifest) -> None:
-        # Atomic: write a sibling temp file then os.replace it in. A crash/power-loss
-        # mid-write then leaves the previous complete manifest intact (write_text
-        # truncates first, so a partial write would otherwise make resume unloadable).
-        tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-        os.replace(tmp, path)
+        write_json(path, manifest)

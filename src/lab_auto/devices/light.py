@@ -35,28 +35,23 @@ class _ExchangeError(DeviceError):
 
 
 class ManualLight:
-    def __init__(self, *, manual: bool):
-        self.manual = manual
+    def __init__(self):
         self.laser_state = "unknown"
         self.led_state = "unknown"
 
     def require_off_confirmation(self) -> str:
-        if self.manual:
-            return "confirm_laser_off"
-        return "laser_off"
+        return "confirm_laser_off"
 
     def require_on_confirmation(self) -> str:
-        if self.manual:
-            return "confirm_laser_on"
-        return "laser_on"
+        return "confirm_laser_on"
 
     def confirm_laser_off(self, *, require_confirmation: bool) -> None:
-        if self.manual and require_confirmation:
+        if require_confirmation:
             input("Confirm laser is OFF, then press Enter: ")
         self.laser_state = "off_confirmed"
 
     def confirm_laser_on(self, *, require_confirmation: bool) -> None:
-        if self.manual and require_confirmation:
+        if require_confirmation:
             input("Confirm laser is ON, then press Enter: ")
         self.laser_state = "on_confirmed"
 
@@ -69,21 +64,21 @@ class PwmModbusLight:
 
     Implements the same interface ``RamanWorkflow`` already drives on ``ManualLight``
     (``require_*_confirmation`` / ``confirm_laser_*`` / ``get_state``) plus the real
-    ``laser_on``/``laser_off``/``led_on``/``led_off`` channel control. All framing is
-    delegated to ``raw.pwm_modbus``; this layer only sequences reads and writes and
-    tracks the laser/LED state machines from spec 12.2.
+    ``laser_on``/``safety_reset`` channel control. All framing is delegated to
+    ``raw.pwm_modbus``; this layer only sequences reads and writes and tracks the
+    laser/LED states (unknown / on_confirmed / off_confirmed / manual_wait).
     """
 
-    def __init__(self, config: LightConfig, *, transport, dry_run: bool):
+    def __init__(self, config: LightConfig, *, transport):
         self.config = config
         self.transport = transport
-        self.dry_run = dry_run
         self.station = config.station_id
         self.laser_state = "unknown"
         self.led_state = "unknown"
         # Emergency-stop may use this same open serial handle from another thread.
         # Serialize whole interlock sequences so an OFF cannot interleave with ON.
         self._lock = threading.RLock()
+        self._emergency_stopped = False
 
     # --- workflow-facing interface (matches ManualLight) ---------------
 
@@ -94,7 +89,7 @@ class PwmModbusLight:
         return "laser_on"
 
     def confirm_laser_off(self, *, require_confirmation: bool) -> None:
-        self.laser_off()
+        self.safety_reset()
 
     def confirm_laser_on(self, *, require_confirmation: bool) -> None:
         self.laser_on()
@@ -107,17 +102,14 @@ class PwmModbusLight:
 
         Reads Reg1 (voltage) and the 5 output-state registers straight from the
         controller (no channel writes), so a read-only status query reflects real
-        hardware rather than only the software state machine. dry_run returns the
-        software state.
+        hardware rather than only the software state machine.
         """
         with self._lock:
-            if self.dry_run:
-                return {"laser_state": self.laser_state, "led_state": self.led_state}
             voltage = self._read(VOLTAGE_REGISTER, 1)[0]
             states = self._read(output_state_register(1), 5)
             channel_states = dict(zip(self._ALL_CHANNELS, states))
-            self.laser_state = "off_confirmed" if channel_states[self._channel("laser").channel] == 0 else "on_confirmed"
-            led = (self.config.channels or {}).get("led")
+            self.laser_state = "off_confirmed" if channel_states[self.config.channels["laser"].channel] == 0 else "on_confirmed"
+            led = self.config.channels.get("led")
             self.led_state = (
                 "off_confirmed" if led is not None and channel_states[led.channel] == 0
                 else "on_confirmed" if led is not None
@@ -131,23 +123,25 @@ class PwmModbusLight:
             }
 
     def safety_reset(self) -> None:
-        """Force every channel off with read-back confirmation (power-on / e-stop).
+        """Force every channel off with read-back confirmation.
 
-        Reused as the power-on safety reset in the factory and for any emergency
-        stop path. Raises ``DeviceError`` if any physical channel cannot be
-        confirmed OFF.
+        Used for workflow laser-off, the power-on reset in the factory and every
+        emergency stop path. Raises ``DeviceError`` if any physical channel cannot
+        be confirmed OFF.
         """
         with self._lock:
-            if self.dry_run:
-                self.laser_state = "off_confirmed"
-                self.led_state = "off_confirmed"
-                return
             failures = self._all_off_with_retry()
             if failures:
                 self.laser_state = "manual_wait"
-                raise DeviceError(f"power-on safety reset failed to confirm channels OFF: {sorted(failures)}")
+                raise DeviceError(f"failed to confirm channels OFF: {sorted(failures)}")
             self.laser_state = "off_confirmed"
             self.led_state = "off_confirmed"
+
+    def emergency_off(self) -> None:
+        """Latch this handle off so an in-flight workflow cannot enable it again."""
+        with self._lock:
+            self._emergency_stopped = True
+            self.safety_reset()
 
     def close(self, *, all_off: bool = True) -> None:
         # Safety net: force every channel off before dropping the transport, so a
@@ -155,86 +149,23 @@ class PwmModbusLight:
         # ``all_off=False`` is for read-only status teardown that must not touch
         # any channel.
         with self._lock:
-            if all_off and not self.dry_run:
+            if all_off:
                 try:
                     self._all_off()
                 except Exception:  # noqa: BLE001 - teardown must never be blocked
                     pass
-            close = getattr(self.transport, "close", None)
-            if close is not None:
-                close()
+            self.transport.close()
 
     # --- channel control ----------------------------------------------
 
     def laser_on(self) -> None:
         with self._lock:
-            if self.dry_run:
-                self.laser_state = "on_confirmed"
-                return
-            self._open_channel(self._channel("laser"))
+            if self._emergency_stopped:
+                raise DeviceError("light handle was emergency-stopped; start a newly confirmed workflow")
+            self._open_channel(self.config.channels["laser"])
             self.laser_state = "on_confirmed"
 
-    def led_on(self) -> None:
-        with self._lock:
-            if self.dry_run:
-                self.led_state = "on_confirmed"
-                return
-            self._open_channel(self._channel("led"))
-            self.led_state = "on_confirmed"  # never satisfies the laser precondition
-
-    def laser_off(self) -> None:
-        with self._lock:
-            if self.dry_run:
-                self.laser_state = "off_confirmed"
-                return
-            failures = self._all_off_with_retry()
-            if failures:
-                self.laser_state = "manual_wait"
-                raise DeviceError(f"failed to confirm laser OFF for channels: {sorted(failures)}")
-            self.laser_state = "off_confirmed"
-            self.led_state = "off_confirmed"
-
-    def led_off(self) -> None:
-        with self._lock:
-            if self.dry_run:
-                self.led_state = "off_confirmed"
-                return
-            failures = self._all_off_with_retry()
-            if failures:
-                self.led_state = "manual_wait"
-                raise DeviceError(f"failed to confirm LED OFF for channels: {sorted(failures)}")
-            self.laser_state = "off_confirmed"
-            self.led_state = "off_confirmed"
-
-    def ensure_voltage_setpoint(self) -> None:
-        """Guarded Reg1 write: only when every channel reads back off.
-
-        One-time SETUP step: establishes the laser voltage setpoint that every
-        ``laser_on``/``led_on`` later re-verifies via ``_verify_voltage``. It is
-        intentionally NOT auto-called on the per-shot enable path (that path only
-        verifies, never writes), so the operator/setup must call this once before
-        laser use. TODO(hardware): confirm where Reg1 is established on the real
-        controller — if it isn't persisted across power cycles, wire this into the
-        bring-up sequence.
-        """
-        with self._lock:
-            if self.dry_run:
-                return
-            states = self._read(output_state_register(1), 5)
-            if any(state != 0 for state in states):
-                raise DeviceError("cannot write Reg1 while any PWM channel is on")
-            target = voltage_to_register(self.config.required_output_voltage_v)
-            self._write_single(VOLTAGE_REGISTER, target)
-            if self._read(VOLTAGE_REGISTER, 1)[0] != target:
-                raise DeviceError("Reg1 voltage readback mismatch after write")
-
     # --- internals -----------------------------------------------------
-
-    def _channel(self, name: str):
-        channel = (self.config.channels or {}).get(name)
-        if channel is None:
-            raise DeviceError(f"no PWM channel mapping configured for '{name}'")
-        return channel
 
     def _open_channel(self, channel) -> None:
         self._verify_voltage()
@@ -279,7 +210,7 @@ class PwmModbusLight:
         # Drive and confirm EVERY physical channel off. The software cannot safely
         # assume an unconfigured output remains unwired for the life of the rig.
         failures: set[int] = set()
-        laser_channel = self._channel("laser").channel
+        laser_channel = self.config.channels["laser"].channel
         for channel in (laser_channel, *(item for item in self._ALL_CHANNELS if item != laser_channel)):
             register = output_state_register(channel)
             try:
@@ -297,15 +228,11 @@ class PwmModbusLight:
         # main "laser won't turn off after one stray byte" self-heal.
         failures = self._all_off()
         if failures:
-            self._reset_input_buffer()
             failures = self._all_off()
         return failures
 
     def _read(self, address: int, count: int) -> list[int]:
-        try:
-            request = build_read_request(station=self.station, address=address, count=count)
-        except ProtocolError as exc:
-            raise DeviceError(f"PWM modbus read request invalid: {exc}") from exc
+        request = build_read_request(station=self.station, address=address, count=count)
         expected_len = expected_read_response_len(count)
 
         def attempt() -> list[int]:
@@ -318,10 +245,7 @@ class PwmModbusLight:
         return self._retry_exchange(attempt)
 
     def _write_single(self, address: int, value: int) -> None:
-        try:
-            request = build_write_single_request(station=self.station, address=address, value=value)
-        except ProtocolError as exc:
-            raise DeviceError(f"PWM modbus write request invalid: {exc}") from exc
+        request = build_write_single_request(station=self.station, address=address, value=value)
 
         def attempt() -> None:
             frame = self._exchange(request, expected_len=8)
@@ -334,26 +258,20 @@ class PwmModbusLight:
 
     def _retry_exchange(self, attempt):
         # Modbus RTU self-heal: a stale/late byte from a prior timeout desyncs the
-        # stream so the response times out or fails to parse. Flush the input buffer
-        # and retry the whole exchange ONCE; without this every following exchange
-        # (including the 5-channel laser_off sweep) keeps failing and the laser can
-        # never be turned off in software. Only ``_ExchangeError`` (read/parse) is
-        # retried -- a transport WRITE failure is a plain DeviceError and is not.
+        # stream so the response times out or fails to parse. Retry the whole
+        # exchange ONCE (``_exchange`` flushes the input buffer first); without this
+        # every following exchange (including the 5-channel off sweep) keeps failing
+        # and the laser can never be turned off in software. Only ``_ExchangeError``
+        # (read/parse) is retried -- a transport WRITE failure is a plain
+        # DeviceError and is not.
         try:
             return attempt()
         except _ExchangeError:
-            self._reset_input_buffer()
             return attempt()
 
-    def _reset_input_buffer(self) -> None:
-        # Drop late/stray bytes still in the OS buffer before writing a fresh
-        # request. getattr-guarded so fakes without the method are a no-op.
-        reset = getattr(self.transport, "reset_input_buffer", None)
-        if reset is not None:
-            reset()
-
     def _exchange(self, request: bytes, *, expected_len: int) -> bytes:
-        self._reset_input_buffer()
+        # 写请求前丢弃串口缓冲区里迟到的字节，避免误读成本次响应
+        self.transport.reset_input_buffer()
         try:
             self.transport.write(request)
         except Exception as exc:  # noqa: BLE001 - write failure is surfaced but never retried

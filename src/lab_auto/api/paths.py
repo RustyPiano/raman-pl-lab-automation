@@ -25,6 +25,11 @@ def measurement_root() -> Path:
     return Path(os.environ.get("LAB_AUTO_MEASUREMENTS_DIR", default)).resolve()
 
 
+def job_state_path() -> Path:
+    default = Path(__file__).resolve().parents[3] / "state" / "api_jobs.json"
+    return Path(os.environ.get("LAB_AUTO_JOB_STATE", default)).resolve()
+
+
 def resolve_config_path(value: str | Path) -> Path:
     """Resolve one YAML path inside the server-owned configuration root."""
     try:

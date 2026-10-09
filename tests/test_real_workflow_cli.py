@@ -31,7 +31,7 @@ devices_config: configs/devices.example.yaml
 sample: {{id: sample-001, operator: lab}}
 optics: {{entrance_port: side, exit_port: direct, grating: 1, center_wavelength_nm: 600, slit_width_um: 100}}
 acquisition: {{exposure_ms: 1000, gain: low, read_mode: fvb, frames: 1, subtract_background: true}}
-output: {{directory: {output_dir}, formats: [csv, json]}}
+output: {{directory: {output_dir}}}
 """,
         encoding="utf-8",
     )

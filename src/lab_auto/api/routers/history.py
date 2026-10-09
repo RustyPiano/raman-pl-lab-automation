@@ -31,6 +31,8 @@ def _read_record(run_dir: Path) -> HistoryRecord | None:
             return None
         metadata_path = run_dir / "metadata.json"
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if metadata.get("status") == "running":
+            return None  # not yet committed; interrupted API jobs are listed separately
         timestamp = metadata.get("timestamp") or datetime.fromtimestamp(
             metadata_path.stat().st_mtime,
             tz=timezone.utc,
@@ -39,7 +41,9 @@ def _read_record(run_dir: Path) -> HistoryRecord | None:
         return HistoryRecord(
             id=run_dir.name,
             created_at=str(timestamp),
-            completed_at=str(timestamp),
+            completed_at=metadata.get("completed_at") or str(timestamp),
+            status=metadata.get("status", "completed"),
+            error="; ".join(str(error) for error in metadata.get("errors", [])) or None,
             sample_id=metadata.get("sample_id"),
             operator=metadata.get("operator"),
             mode=str(metadata.get("runtime_mode") or "unknown"),

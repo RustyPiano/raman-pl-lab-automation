@@ -5,6 +5,7 @@ there's no default devices config (the common dev-machine case) or the
 config fails to load. Real hardware is never touched here.
 """
 from fastapi.testclient import TestClient
+import pytest
 
 import lab_auto.api.main as main
 
@@ -78,3 +79,23 @@ def test_atexit_handler_never_raises(tmp_path, monkeypatch):
     monkeypatch.setenv("LAB_AUTO_DEVICES_CONFIG", str(tmp_path / "missing.yaml"))
 
     main._atexit_safety_reset()  # must not raise
+
+
+def test_corrupt_job_history_cannot_bypass_startup_light_reset(tmp_path, monkeypatch):
+    from lab_auto.errors import ConfigError
+
+    path = tmp_path / "jobs.json"
+    monkeypatch.setattr(main, "_atexit_reset_armed", False)
+    path.write_text("broken-json")
+    monkeypatch.setenv("LAB_AUTO_JOB_STATE", str(path))
+    resets = []
+
+    def reset():
+        resets.append(True)
+        return True, "fake light confirmed off"
+
+    monkeypatch.setattr(main, "_reset_light_best_effort", reset)
+    with pytest.raises(ConfigError, match="recover"):
+        with TestClient(main.app):
+            pass
+    assert resets == [True]

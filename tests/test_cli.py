@@ -24,7 +24,6 @@ acquisition:
   subtract_background: true
 output:
   directory: {output_dir}
-  formats: [csv, json]
 """,
         encoding="utf-8",
     )

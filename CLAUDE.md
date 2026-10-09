@@ -4,7 +4,7 @@
 
 ## 项目背景（30秒版）
 
-把老师的人工测量 SOP（`docs/lab-sop-pl-mapping-zolix-ocr.md`）自动化：WayneLabs 电动位移台（串口）+ Zolix 光谱仪（DLL）+ DField CCD（DLL）+ PWM 激光/LED 光源（Modbus RTU）。分层：`devices/raw/`（协议）→ `devices/`（适配器）→ `workflow/`（单点测量/托盘扫描）→ `cli.py`（ramanctl）+ `api/`（FastAPI）→ `frontend/`（React）。开发在 macOS 上以 dry-run/simulated 模式进行；真机是实验室 Windows 64 位机器。
+把老师的人工测量 SOP（`docs/lab-sop-pl-mapping-zolix-ocr.md`）自动化：WayneLabs 电动位移台（串口）+ Zolix 光谱仪（DLL）+ DField CCD（DLL）+ PWM 激光/LED 光源（Modbus RTU）。分层：`devices/raw/`（协议）→ `devices/`（适配器）→ `workflow/`（单点测量/托盘扫描）→ `cli.py`（ramanctl）+ `api/`（FastAPI）→ `frontend/`（React）。开发在 macOS 上以 dry-run/simulated 模式进行；真机是实验室 Windows 64 位机器。完整说明见 `README.md`，真机部署见 `docs/lab-setup.md`。
 
 ## 当前状态
 
@@ -14,7 +14,7 @@
 
 - 测试：`.venv/bin/python -m pytest -q`（venv 用 `uv venv .venv --python 3.12` + `uv pip install -e ".[dev,api]"` 创建）
 - 后端：`./scripts/start_api.sh`（http://127.0.0.1:8008）；前端：`./scripts/start_frontend.sh`
-- 前端构建验证：`cd frontend && npm run build`
+- 前端验证：`cd frontend && npm test && npm run lint && npm run build`
 
 ## 安全红线（改代码前必读）
 

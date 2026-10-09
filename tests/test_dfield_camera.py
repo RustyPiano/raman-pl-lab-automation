@@ -224,7 +224,7 @@ class FakeDFieldRaw:
         self.calls.append(("status",))
         return {"open": True, "width": 3, "height": 1, "gain_code": 1, "read_mode_code": 0}
 
-    def capture(self, *, read_mode_code: int, exposure_ms: float, gain_code: int, frames: int, bin_x: int = 1, bin_y: int = 1, roi=None) -> dict:
+    def capture(self, *, read_mode_code: int, exposure_ms: float, gain_code: int, frames: int, bin_x: int = 1, bin_y: int = 1, roi=None, should_cancel=None) -> dict:
         self.calls.append(("capture", read_mode_code, exposure_ms, gain_code, frames, bin_x, bin_y, roi))
         if self.fail_capture:
             raise DeviceError("DField capture failed")
@@ -251,7 +251,7 @@ class FakeDFieldRaw:
 
 
 class FakeImageRaw:
-    def capture(self, *, read_mode_code: int, exposure_ms: float, gain_code: int, frames: int, bin_x: int = 1, bin_y: int = 1, roi=None) -> dict:
+    def capture(self, *, read_mode_code: int, exposure_ms: float, gain_code: int, frames: int, bin_x: int = 1, bin_y: int = 1, roi=None, should_cancel=None) -> dict:
         return {
             "width": 2,
             "height": 2,
@@ -271,7 +271,7 @@ class FakeImageRaw:
 
 
 class FakeBinnedRaw(FakeImageRaw):
-    def capture(self, *, read_mode_code: int, exposure_ms: float, gain_code: int, frames: int, bin_x: int = 1, bin_y: int = 1, roi=None) -> dict:
+    def capture(self, *, read_mode_code: int, exposure_ms: float, gain_code: int, frames: int, bin_x: int = 1, bin_y: int = 1, roi=None, should_cancel=None) -> dict:
         data = super().capture(
             read_mode_code=read_mode_code,
             exposure_ms=exposure_ms,

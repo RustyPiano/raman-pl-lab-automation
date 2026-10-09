@@ -13,16 +13,14 @@ export function ProgressDisplay() {
 
   const { progress, current_step, status } = currentJob;
   const stepLabel = current_step ? ({
-    initializing: '初始化',
     executing: '执行测量',
-    saving: '保存结果',
     completed: '已完成',
-  }[current_step] ?? current_step) : '初始化…';
+  }[current_step] ?? current_step) : '等待开始…';
 
   const statusConfig = {
     pending: { label: '等待中', variant: 'outline' },
     running: { label: '运行中', variant: 'default' },
-    stopping: { label: '安全停止中', variant: 'secondary' },
+    stopping: { label: '停止中', variant: 'secondary' },
     completed: { label: '已完成', variant: 'secondary' },
     failed: { label: '失败', variant: 'destructive' },
     stopped: { label: '已停止', variant: 'outline' },

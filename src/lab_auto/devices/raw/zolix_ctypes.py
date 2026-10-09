@@ -1,8 +1,6 @@
 import ctypes
-import os
-from dataclasses import dataclass
-from pathlib import Path
 
+from lab_auto.devices.raw.native import LoadedLibrary, load_library, maybe_configure as _maybe_configure  # noqa: F401
 from lab_auto.errors import DeviceError
 
 
@@ -25,31 +23,6 @@ REQUIRED_EXPORTS = (
     "spec_get_curr_wave",
     "spec_get_slit_width",
 )
-
-
-@dataclass(frozen=True)
-class LoadedLibrary:
-    lib: object
-    dll_directory_handle: object | None = None
-
-    def __getattr__(self, name: str):
-        return getattr(self.lib, name)
-
-
-def load_library(dll_path: Path) -> LoadedLibrary:
-    dll_path = Path(dll_path)
-    dll_directory_handle = None
-    if hasattr(os, "add_dll_directory"):
-        dll_directory_handle = os.add_dll_directory(str(dll_path.parent))
-    lib = ctypes.WinDLL(str(dll_path)) if hasattr(ctypes, "WinDLL") else ctypes.CDLL(str(dll_path))
-    return LoadedLibrary(lib=lib, dll_directory_handle=dll_directory_handle)
-
-
-def _maybe_configure(lib, name: str, argtypes, restype) -> None:
-    func = getattr(lib, name, None)
-    if func is not None:
-        func.argtypes = argtypes
-        func.restype = restype
 
 
 def has_required_exports(lib) -> bool:

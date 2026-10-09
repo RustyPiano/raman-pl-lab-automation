@@ -1,6 +1,6 @@
 import argparse
 from collections.abc import Sequence
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 
 from lab_auto.config import RuntimeConfig, load_devices_config, load_tray_scan_config, load_workflow_and_devices, workflow_config_from_tray_scan
@@ -12,6 +12,7 @@ from lab_auto.devices.waynelabs_stage import PositionLedger, WaynelabsStage
 from lab_auto.devices.zolix_spectrometer import direct_to_front_bool
 from lab_auto.errors import ConfigError, DeviceError, SafetyError
 from lab_auto.runtime import RuntimeMode, resolve_runtime_mode
+from lab_auto.vision.recognition import FileMaskProvider
 from lab_auto.workflow.raman import RamanWorkflow
 from lab_auto.workflow.tray_scan import TrayScanWorkflow, simulated_mask_provider
 
@@ -108,6 +109,9 @@ def build_parser() -> argparse.ArgumentParser:
     tray.add_argument("--config", required=True)
     tray.add_argument("--devices-config")
     tray.add_argument("--yes", action="store_true")
+    tray.add_argument("--recognition-dir", help="Shared directory for fresh capture/recognition requests")
+    tray.add_argument("--session-id", help="Unique tray loading session; reuse only when resuming the same tray")
+    tray.add_argument("--recognition-timeout-s", type=float, default=60)
     add_runtime_flags(tray)
     return parser
 
@@ -352,6 +356,7 @@ def main(argv: Sequence[str] | None = None, *, factory: DeviceFactory | None = N
                     workflow.close()
                 return 0
             workflow = RamanWorkflow.dry_run(workflow_config) if mode is RuntimeMode.DRY_RUN else RamanWorkflow.simulated(workflow_config)
+            workflow.devices_snapshot = asdict(devices_config)
             if mode is RuntimeMode.DRY_RUN:
                 for action in workflow.measure_single_point(require_confirmation=not args.yes):
                     print(action)
@@ -369,7 +374,13 @@ def main(argv: Sequence[str] | None = None, *, factory: DeviceFactory | None = N
             devices_config = _with_runtime_mode(devices_config, mode)
             print(f"devices_config:{devices_path}")
             if mode is RuntimeMode.REAL:
-                workflow = factory.create_tray_scan_workflow(scan_config, devices_config)
+                if not (args.recognition_dir and args.session_id):
+                    raise ConfigError("real tray scan requires --recognition-dir and --session-id for the recognition file handshake")
+                provider = FileMaskProvider(
+                    args.recognition_dir, session_id=args.session_id,
+                    timeout_s=args.recognition_timeout_s, calibration=scan_config.calibration,
+                )
+                workflow = factory.create_tray_scan_workflow(scan_config, devices_config, mask_provider=provider)
                 try:
                     workflow.run(require_confirmation=not args.yes)
                     print(f"tray_scan_complete:{scan_config.output.directory}")
@@ -384,7 +395,8 @@ def main(argv: Sequence[str] | None = None, *, factory: DeviceFactory | None = N
                 print(action)
             return 0
 
-        devices_config = load_devices_config(args.config) if getattr(args, "config", None) else None
+        # Only the `devices` commands make --config optional; stage/spec/camera require it.
+        devices_config = load_devices_config(args.config) if args.config else None
         if args.domain == "devices" and args.real and devices_config is None:
             raise ConfigError("devices --real requires --config")
         mode = _resolve_devices_args_mode(args, devices_config) if devices_config is not None else RuntimeMode.DRY_RUN
@@ -399,35 +411,10 @@ def main(argv: Sequence[str] | None = None, *, factory: DeviceFactory | None = N
             result = _run_non_real_hardware_command(args, devices_config, mode)
             if result is not None:
                 return result
-
-        if args.domain == "devices":
-            return _print_dry_run(f"devices_{args.command}")
-        if args.domain == "stage":
-            if args.command == "identify":
-                return _print_dry_run("stage_identify")
-            if args.command == "move":
-                return _print_dry_run(f"stage_move:{args.axis}:{args.um}")
-            if args.command == "home":
-                return _print_dry_run(f"stage_home:{args.axis}:{args.direction}")
-            if args.command == "trigger":
-                return _print_dry_run(f"stage_trigger:{args.mode}")
-        if args.domain == "spec":
-            if args.command == "status":
-                return _print_dry_run("spec_status")
-            if args.command == "init":
-                return _print_dry_run(f"spec_init:entrance={args.entrance}:exit={args.exit}")
-            if args.command == "set":
-                return _print_dry_run(f"spec_set:grating={args.grating}:wavelength_nm={args.wavelength_nm}:slit_um={args.slit_um}")
-        if args.domain == "camera":
-            if args.command == "status":
-                return _print_dry_run("camera_status")
-            if args.command == "temperature":
-                return _print_dry_run("camera_temperature")
-            if args.command == "capture":
-                return _print_dry_run(f"camera_capture:mode={args.mode}:out={args.out}")
+        # stage/spec/camera are fully handled above; only non-real `devices` commands remain.
+        return _print_dry_run(f"devices_{args.command}")
     except (ConfigError, DeviceError, SafetyError, OSError) as exc:
         # AttributeError is intentionally NOT caught: it signals a programming bug
         # (typo/missing attr), and swallowing it as "error: ..." hides real defects.
         print(f"error: {exc}")
         return 2
-    parser.error("unsupported command")

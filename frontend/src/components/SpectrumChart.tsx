@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { TriangleAlert } from 'lucide-react';
 import {
   CartesianGrid,
-  Legend,
   Line,
   LineChart,
   ResponsiveContainer,
@@ -15,6 +14,9 @@ import type { SpectrumResult } from '@/api/client';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+
+// 刻度最多保留一位小数，避免 589.815 这类长数字挤在一起
+const formatTick = (value: number) => String(Math.round(value * 10) / 10);
 
 interface SpectrumChartProps {
   result: SpectrumResult;
@@ -32,48 +34,53 @@ export function SpectrumChart({ result }: SpectrumChartProps) {
 
   return (
     <Card>
-      <CardHeader className="flex-row items-center justify-between">
-        <div className="flex min-w-0 flex-col gap-1">
+      <CardHeader className="flex-row items-start justify-between gap-3">
+        <div className="flex min-w-0 flex-1 flex-col gap-1">
           <CardTitle>光谱数据</CardTitle>
           <CardDescription className="truncate">{outputLabel}</CardDescription>
         </div>
-        <ToggleGroup
-          type="single"
-          variant="outline"
-          size="sm"
-          value={activeSeries}
-          onValueChange={(value) => {
-            if (value === 'raw' || value === 'corrected') setSeries(value);
-          }}
-          aria-label="选择光谱序列"
-        >
-          <ToggleGroupItem value="raw" aria-label="显示原始光谱">原始</ToggleGroupItem>
-          {correctedAvailable && (
-            <ToggleGroupItem value="corrected" aria-label="显示校正光谱">校正</ToggleGroupItem>
-          )}
-        </ToggleGroup>
+        {correctedAvailable && (
+          <ToggleGroup
+            type="single"
+            variant="outline"
+            size="sm"
+            className="shrink-0"
+            value={activeSeries}
+            onValueChange={(value) => {
+              if (value === 'raw' || value === 'corrected') setSeries(value);
+            }}
+            aria-label="选择光谱序列"
+          >
+            <ToggleGroupItem value="raw" className="whitespace-nowrap">原始</ToggleGroupItem>
+            <ToggleGroupItem value="corrected" className="whitespace-nowrap">扣除背景</ToggleGroupItem>
+          </ToggleGroup>
+        )}
       </CardHeader>
       <CardContent>
         <div className="h-[300px] w-full sm:h-[420px]" role="img" aria-label="光谱折线图">
           <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={chartData} margin={{ top: 5, right: 30, left: 20, bottom: 20 }}>
+            <LineChart data={chartData} margin={{ top: 8, right: 16, left: 8, bottom: 24 }}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis
                 dataKey="x"
+                type="number"
+                domain={['dataMin', 'dataMax']}
+                tickFormatter={formatTick}
+                minTickGap={24}
                 label={{
                   value: wavelengthAxis ? '波长 (nm)' : '像素索引',
                   position: 'insideBottom',
-                  offset: -12,
+                  offset: -16,
                 }}
               />
-              <YAxis label={{ value: '强度', angle: -90, position: 'insideLeft' }} />
-              <Tooltip />
-              <Legend />
+              <YAxis tickFormatter={formatTick} width={56} label={{ value: '强度', angle: -90, position: 'insideLeft' }} />
+              <Tooltip labelFormatter={(value) => `${wavelengthAxis ? '波长' : '像素'} ${value}`} />
               <Line
                 type="monotone"
                 dataKey="intensity"
                 stroke={activeSeries === 'corrected' ? 'hsl(var(--primary))' : 'hsl(var(--foreground))'}
-                name={activeSeries === 'corrected' ? '校正光谱' : '原始光谱'}
+                name="强度"
+                isAnimationActive={false}
                 dot={false}
                 strokeWidth={2}
               />

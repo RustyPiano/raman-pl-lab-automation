@@ -13,7 +13,6 @@ class CaptureFrame:
     exposure_ms: float
     gain: str
     values: list[int]
-    saturated_count: int
     saturated: list[bool]
     metadata: dict[str, Any]
     raw_frames_count: int = 1

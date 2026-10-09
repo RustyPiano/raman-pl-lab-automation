@@ -1,7 +1,6 @@
-"""Tests for the rewritten device/light endpoints (routers/devices.py).
+"""Tests for the device/light endpoints (routers/devices.py).
 
-These exercise the router in isolation (a bare FastAPI app with only
-``devices.router`` mounted, no lifespan) via TestClient, with
+These exercise the router through TestClient (no lifespan), with
 ``DeviceFactory``/``task_queue`` monkeypatched to fakes -- real serial ports
 are never touched.
 """
@@ -9,11 +8,11 @@ import copy
 
 import pytest
 import yaml
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from lab_auto.api.main import app
 from lab_auto.api.routers import devices
-from lab_auto.errors import DeviceError
+from lab_auto.errors import DeviceError, HardwareBusyError
 
 # Mirrors tests/test_light_config.py's fixture: a minimal valid devices.yaml.
 BASE = {
@@ -72,6 +71,11 @@ class FakeQueue:
         self.cancel_all_called = True
         return self._cancelled
 
+    async def run_device_operation(self, fn, *, require_idle=True):
+        if require_idle and self._busy:
+            raise HardwareBusyError("busy")
+        return fn()
+
     def safety_devices_path(self):
         return None
 
@@ -124,8 +128,8 @@ def _fake_factory_class(light, create_light_calls):
 
 @pytest.fixture
 def app_client():
-    app = FastAPI()
-    app.include_router(devices.router)
+    # main.app carries the shared error handlers; TestClient without `with`
+    # does not run the lifespan, so no hardware reset happens.
     return TestClient(app)
 
 
@@ -133,7 +137,8 @@ def app_client():
 
 def test_light_on_endpoint_is_removed(app_client):
     response = app_client.post("/api/devices/light/on")
-    assert response.status_code == 404
+    # 405 when the built frontend's GET-only fallback route is mounted
+    assert response.status_code in (404, 405)
 
 
 # --- GET /light/status ---------------------------------------------------------

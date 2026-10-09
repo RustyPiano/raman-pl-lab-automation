@@ -1,10 +1,8 @@
 import ctypes
 import math
-import os
 from collections.abc import Callable
-from dataclasses import dataclass
-from pathlib import Path
 
+from lab_auto.devices.raw.native import LoadedLibrary, load_library, maybe_configure as _maybe_configure  # noqa: F401
 from lab_auto.devices.dfield_validation import (
     validate_dfield_bin_roi,
     validate_dfield_capture_args,
@@ -42,33 +40,8 @@ def _is_integer_code(value: int, allowed: tuple[int, ...]) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value in allowed
 
 
-@dataclass(frozen=True)
-class LoadedLibrary:
-    lib: object
-    dll_directory_handle: object | None = None
-
-    def __getattr__(self, name: str):
-        return getattr(self.lib, name)
-
-
 def windows_long_array(size: int):
     return (WindowsLong * size)()
-
-
-def load_library(dll_path: Path) -> LoadedLibrary:
-    dll_path = Path(dll_path)
-    dll_directory_handle = None
-    if hasattr(os, "add_dll_directory"):
-        dll_directory_handle = os.add_dll_directory(str(dll_path.parent))
-    lib = ctypes.WinDLL(str(dll_path)) if hasattr(ctypes, "WinDLL") else ctypes.CDLL(str(dll_path))
-    return LoadedLibrary(lib=lib, dll_directory_handle=dll_directory_handle)
-
-
-def _maybe_configure(lib, name: str, argtypes, restype) -> None:
-    func = getattr(lib, name, None)
-    if func is not None:
-        func.argtypes = argtypes
-        func.restype = restype
 
 
 def has_required_exports(lib) -> bool:

@@ -10,6 +10,10 @@ class DeviceError(LabAutomationError):
     """Hardware adapter or raw binding operation failed."""
 
 
+class HardwareBusyError(DeviceError):
+    """Another operation still owns the hardware, including after an HTTP timeout."""
+
+
 class SafetyError(LabAutomationError):
     """Requested action violates a configured safety rule."""
 

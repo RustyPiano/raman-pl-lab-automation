@@ -1,48 +1,57 @@
-# 真机确认清单（实验室 Windows 机器）
+# 真机复验清单
 
-> **给实验室机器上的 Agent**：这是你在真机上的主任务清单。先读 CLAUDE.md 和 docs/PROJECT_STATUS.md 建立上下文。
-> 按顺序执行；每完成一项，把实测值和结论写入当天的验收报告 `docs/hardware-acceptance-report-YYYYMMDD.md`（格式参考 `docs/hardware-acceptance-report-20260624.md`），偏离预期的现象同步写入 PROJECT_STATUS.md 的「已知问题」。
->
-> **安全前提（每次 real 操作前逐条确认）**：操作员在场；物理急停/激光钥匙开关可及；样品台上没有贵重样品（除非该项明确需要）；先 dry-run 演练再 real。凡涉及激光开启的步骤，先向操作员口头确认再执行。
+2026-06-24 在实验室电脑上验证过设备通信和单点测量。之后的安全修复（2026-07）、可靠性修复（2026-09-07）和交接前精简（2026-10-09）都只在模拟设备上测试过，需要按本清单在真机上复验。
 
-## 0. 环境搭建与基线
+做法：按顺序执行，第 1 节全部通过之前不做后面各节。每项的实测数值写进 [lab-setup.md](lab-setup.md) 第 3 节（配置文件不入库，数值只留在配置里会丢失），与模拟结果不一致的现象写进 [PROJECT_STATUS.md](PROJECT_STATUS.md) 的「已知边界」。
 
-- [ ] 按 `docs/windows/WINDOWS_SETUP.md` 部署；Python 必须是 **3.11+ 64 位**（DLL 是 64 位的）。
-- [ ] `pip install -e ".[dev,api]"`（或 uv）；前端需要时 `cd frontend && npm ci`。
-- [ ] **基线测试**：`python -m pytest -q` → 期望 **462 passed, 2 skipped**。数字不符先停下调查，不要带病上硬件。
-- [ ] `scripts\check_ports.bat` 记录本机全部 COM 口清单（已知：位移台 COM4；待确认：物镜转盘 COM5、光路切换 COM16、半波片 COM17、PWM 光源端口）。
-- [ ] 从 `configs/devices.example.yaml` 建立 `configs/devices.yaml`，按实测填端口。
-- [ ] hooks 依赖 Git Bash（Git for Windows 自带）；若 Stop/PostToolUse hook 报错，确认 `bash` 在 PATH。
+每次真机操作前：操作员在场；物理急停和激光钥匙开关伸手可及；样品台上不放贵重样品；先 `--dry-run`。涉及开激光的步骤先口头告知操作员。
 
-## 1. P0 安全修复真机验证（最优先；1.x 全过之前不做第 2、3 节）
+## 0. 环境
 
-P0 改动（commit `3429b52`，明细见 CHANGELOG「P0 安全修复」）只在模拟层验证过，以下逐项在真机确认：
+- [ ] 按 [lab-setup.md](lab-setup.md) 安装，`pytest -q` 全部通过，记录 Python 版本与测试数量。
+- [ ] `python -m serial.tools.list_ports` 的结果与 lab-setup.md 第 3 节的串口表一致。
+- [ ] `ramanctl devices doctor --config configs\devices.real.yaml --real` 报告 64 位 Python、两个 DLL 都可加载。
 
-- [ ] **1.1 上电安全复位**：用厂家调试工具（或直接 Modbus 写寄存器）把一个非激光通道置 ON → 运行 `ramanctl` 任一需要光源的命令或启动 API → 判据：创建光源时全部通道被关断且读回为 0；API 启动日志出现 "power-on laser safety reset confirmed"。
-- [ ] **1.2 紧急停止端点**：dry-run 提交一个任务，任务运行中 `POST /api/emergency-stop` → 判据：响应 `laser_off: "confirmed"`，任务被取消。再在 real 模式短曝光任务中重复 → 判据：激光实际熄灭（目视/功率计）。
-- [ ] **1.3 协作式取消**：real 模式单点测量（短曝光、废样品），进度中点 Web「停止」→ 判据：状态走 stopping→stopped；激光实际熄灭；不出现「前端说停了、激光还亮」。
-- [ ] **1.4 串口参数与 Modbus 健壮性**：确认 PWM 控制器实际是 8N1 还是 8E1（协议文档 vs 实测）；正常读写往返稳定；有条件时拔插/干扰一次串口，确认失步后自愈（重试日志）而不是永久 manual_wait。
-- [ ] **1.5 位置台账崩溃安全**：X 轴发起一次小行程移动（如 500 µm），移动中杀掉进程（任务管理器）→ 重启 → 判据：该轴状态为 UNKNOWN、拒绝大距离移动、要求重新 home。⚠️ 电机会走完剩余行程，确认行程范围内无碰撞风险再做。
-- [ ] **1.6 home 方向实测**：低速、手悬急停，分别观察各轴 home 的安全方向 → 把实测方向写入 `devices.yaml` 的 `stage.home_direction` → 再故意用反方向调 home，判据：被 SafetyError 拒绝。
-- [ ] **1.7 参数上限**：配置 `exposure_ms: 60001` → 判据：被拒绝且报错信息包含 "safety cap"。
+## 1. 激光安全（最优先）
 
-## 2. 审计标记的「只有真机能确认」项
+- [ ] **上电复位**：用厂家工具把一个非激光通道打开，再运行任一需要光源的命令或启动后端。判据：全部通道被关闭且读回为 0；后端日志出现 `power-on laser safety reset confirmed`。
+- [ ] **开激光前的检查**：把配置中激光通道的频率或占空比改成与控制器不同的值，运行单点测量。判据：拒绝开激光并报 frequency/duty mismatch。改回正确值后可以正常测量。
+- [ ] **Reg1**：读取光源状态（Web 设备页或 `GET /api/devices/light/status`）。判据：`voltage_register` 为 50。
+- [ ] **测量结束关激光**：单点测量完成后读取光源状态。判据：5 个通道全部为 0。
+- [ ] **急停**：短曝光真机测量进行中，点击 Web 全局急停（或 `POST /api/emergency-stop`），同时让浏览器的进度连接断开或卡住。判据：响应 `laser_off: "confirmed"`，激光实际熄灭（目视或功率计），关灯不等待进度推送。软件关灯失败时立即用物理开关。
+- [ ] **停止任务**：测量进行中点「停止」。判据：状态依次为 stopping、stopped，激光实际熄灭。
+- [ ] **串口失步自愈**：确认 PWM 控制器的串口参数（8N1 或 8E1）；有条件时干扰一次串口。判据：重试后恢复，不会一直停在 `manual_wait`。
+- [ ] **参数上限**：配置 `exposure_ms: 60001`。判据：拒绝运行，报错含 `safety cap`。
 
-- [ ] **2.1 激光斑 = 图像中心**（M2 全部标定的前提假设）：成像模式下打开激光最低功率，拍照测激光斑心与图像几何中心的像素偏差。偏差显著则记录数值——M2 标定要加偏移项。
-- [ ] **2.2 软限位与分辨率实测**：当前 `resolution_um: 0.04`、软限位 ±5000/±1000 是旧代码注释的占位值。实测各轴行程与每步位移，替换 `devices.yaml` 占位值并记录依据。
-- [ ] **2.3 ctypes 边界用例**（防原生堆破坏）：用 ROI 宽/高**不能被 bin 整除**的组合采集（如 ROI 宽 7、bin_x 2），判据：返回尺寸与预期一致、进程不崩溃。多试几组边界。
-- [ ] **2.4 FVB 残留 ROI**：先做一次 image 模式 + ROI 采集，紧接 FVB 采集 → 判据：FVB 结果不受残留 ROI 影响（长度 2048）。
-- [ ] **2.5 Phase 2 M1 遗留读回**（见 `docs/phase2-hardware-acceptance.md`）：Reg1 显式读回 == 0x0032；关闭后全通道读回为 0。
-- [ ] **2.6 identify 分包观察**：多次运行 stage identify，若出现「首响应不完整→报错」即命中审计已知问题（分包解析），记录频率，回报后修。
+## 2. 位移台
 
-## 3. 信息采集（为 P1/P2 填坑）
+- [ ] **归零方向**：低速、手放急停上，逐轴观察安全的归零方向，写入 `stage.home_direction`。再用相反方向执行 home。判据：被 SafetyError 拒绝。
+- [ ] **分辨率与软限位**：实测每轴每步位移和可用行程，替换配置中的占位值 `resolution_um: 0.04`、`±5000 / ±1000 µm`。
+- [ ] **移动中断**：X 轴小行程移动（如 500 µm）途中在任务管理器结束进程，再重新运行。判据：该轴状态为 `unknown`，大距离移动被拒绝，需要重新归零。注意电机会走完剩余行程，先确认行程内无碰撞。
+- [ ] **identify 分包**：多次运行 `stage identify`，记录是否出现首个响应不完整导致报错，以及出现频率。
 
-- [ ] **3.1 三个未建模串口子系统探查**：⚠️ **不要向身份未确认的 COM 口发送任何指令**——先向老师/师兄要旧控制代码（`changelight.py`、`lenschange.py`、`lasermove.py`）确认协议，再逐口验证。目标：记录 COM5（物镜转盘）、COM16（光路切换 Image-LED ↔ PL/Raman）、COM17（半波片功率）的波特率、指令集、响应格式，存入 `docs/` 供后续建模。
-- [ ] **3.2 `configs/tray_scan.real.yaml` 的 `<FILL>` 采集**：像素↔位移台仿射标定（按当前物镜）、样品盘几何、burn_threshold（用一对已知良谱标定）、min_area、calibration 的 image_width_px/height_px（**必填**，防识别缩放导致激光脱靶）。
-- [ ] **3.3 CCD 冷却与温度**：读 `temperature_c()` 记录环境值；确认 `a4_set_cooling_temp` 是否可用及到温时间（P2 控温功能的输入）。
+## 3. 光谱仪与相机
 
-## 4. 记录纪律
+- [ ] **波长换算**：短曝光运行 `workflow single --real`。判据：`raw.csv` 有 `wavelength_nm` 列且数值在中心波长附近，`metadata.json` 的 `x_axis_type` 为 `wavelength_nm`。换算失败时测量会失败并关激光，记录报错。
+- [ ] **背景扣除**：`corrected.csv` 等于样品值减去 `background.csv` 的实测值。
+- [ ] **ROI 边界**：用宽或高不能被 bin 整除的 ROI 采集（如 ROI 宽 7、`bin_x` 2）。判据：返回尺寸正确，进程不崩溃。
+- [ ] **ROI 残留**：先做一次 image 模式加 ROI 采集，紧接着 FVB 采集。判据：FVB 长度为 2048。
+- [ ] **温度**：`ramanctl camera temperature` 记录环境温度；确认 `a4_set_cooling_temp` 是否可用及到温时间（后续控温功能需要）。
 
-- 每完成一节就 commit（hooks 会提醒维护 PROJECT_STATUS.md）。
-- 所有实测数值（端口、分辨率、限位、偏差、阈值）必须落在验收报告里，不能只留在配置文件——配置是 gitignored 的。
-- 遇到与 dry-run/simulated 行为不一致的任何现象，无论多小，记入验收报告「Deviations」段——这些是修正模拟层的输入。
+## 4. Web 后端
+
+- [ ] **硬件互斥**：设备诊断进行中提交测量。判据：诊断结束前不打开测量设备；同时发起两次诊断，第二次返回 409。
+- [ ] **任务恢复**：刷新浏览器后仍能看到并停止同一任务；重启后端后，未完成任务显示为失败，不会自动继续曝光，已完成结果仍可查看。
+- [ ] **失败留档**：拔掉相机或取消测量。判据：输出目录里的 `metadata.json` 和 `run.log` 写明原因，历史页显示真实状态。
+- [ ] **科研记录**：填写实际 `excitation_wavelength_nm` 和样品处实测 `laser_power_mw`。判据：输出中有配置快照、软件版本、探测器温度和这两个值。
+
+## 5. 托盘扫描
+
+- [ ] **激光斑与图像中心**：按 lab-setup.md 第 6 节测量并填写标定。
+- [ ] **识别握手**：按 [recognition-handoff.md](recognition-handoff.md) 的验收判据，先用模拟采集端测试错 session、旧时间、错摘要、错尺寸、取消和 `measurement_ready: false` 的拒绝情况。
+- [ ] **参数检查**：不带 `--recognition-dir` / `--session-id` 运行 `scan tray --real`。判据：在打开设备前报错。
+- [ ] **废样品试跑**：光路恢复和标定都验证后，用废样品、一个盘格试跑，再逐步增加盘格数。
+
+## 6. 尚未接入的串口设备
+
+- [ ] 物镜转盘（COM5）、光路切换（COM16）、半波片（COM17）：**不要向身份未确认的串口发送任何指令**。先向老师或师兄要旧控制代码（`lenschange.py`、`changelight.py`、`lasermove.py`），确认波特率、指令和响应格式，记录到 lab-setup.md，供以后接入。

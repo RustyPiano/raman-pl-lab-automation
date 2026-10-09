@@ -29,18 +29,14 @@ class ZolixSpectrometer:
         self.device_id = device_id
 
     def status(self) -> dict:
-        status = dict(self.raw.get_status(self.device_id))
-        if hasattr(self.raw, "get_entrance_port"):
-            status["entrance_port"] = front_bool_to_port(self.raw.get_entrance_port(self.device_id))
-        if hasattr(self.raw, "get_exit_port"):
-            status["exit_port"] = front_bool_to_port(self.raw.get_exit_port(self.device_id))
-        if hasattr(self.raw, "get_grating"):
-            status["grating"] = self.raw.get_grating(self.device_id)
-        if hasattr(self.raw, "get_current_wavelength_nm"):
-            status["current_wavelength_nm"] = self.raw.get_current_wavelength_nm(self.device_id)
-        if hasattr(self.raw, "get_slit_width_um"):
-            status["slit_width_um"] = self.raw.get_slit_width_um(self.device_id)
-        return status
+        return {
+            **self.raw.get_status(self.device_id),
+            "entrance_port": front_bool_to_port(self.raw.get_entrance_port(self.device_id)),
+            "exit_port": front_bool_to_port(self.raw.get_exit_port(self.device_id)),
+            "grating": self.raw.get_grating(self.device_id),
+            "current_wavelength_nm": self.raw.get_current_wavelength_nm(self.device_id),
+            "slit_width_um": self.raw.get_slit_width_um(self.device_id),
+        }
 
     def initialize(self, *, entrance_port: str, exit_port: str) -> bool:
         return self.set_entrance_port(entrance_port) and self.set_exit_port(exit_port)

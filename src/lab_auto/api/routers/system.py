@@ -16,7 +16,7 @@ from lab_auto.api.paths import default_devices_config_path
 from lab_auto.api.task_queue import task_queue
 from lab_auto.config import load_devices_config
 from lab_auto.devices.factory import DeviceFactory
-from lab_auto.errors import ConfigError, DeviceError
+from lab_auto.errors import ConfigError
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["system"])

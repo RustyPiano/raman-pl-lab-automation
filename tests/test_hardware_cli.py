@@ -549,6 +549,9 @@ class _RecordingModbusSlave:
         self.closed = False
         self._out = bytearray()
 
+    def reset_input_buffer(self) -> None:
+        pass
+
     def write(self, data: bytes) -> None:
         from lab_auto.devices.raw import pwm_modbus as mb
 
@@ -627,7 +630,7 @@ def test_create_light_raises_and_closes_when_power_on_reset_cannot_confirm_off(t
     )
     factory = PwmResetFactory(slave)
 
-    with pytest.raises(DeviceError, match="safety reset"):
+    with pytest.raises(DeviceError, match="confirm channels OFF"):
         factory.create_light(config)
     assert slave.closed is True
 

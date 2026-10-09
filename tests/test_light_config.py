@@ -33,8 +33,8 @@ PWM_LIGHT = {
     "max_output_voltage_v": 5.0,
     "required_output_voltage_v": 5.0,
     "channels": {
-        "led": {"channel": 1, "frequency_hz": 1000, "duty_percent": 5.0, "default_off_required": True},
-        "laser": {"channel": 2, "frequency_hz": 1000, "duty_percent": 5.0, "default_off_required": True},
+        "led": {"channel": 1, "frequency_hz": 1000, "duty_percent": 5.0},
+        "laser": {"channel": 2, "frequency_hz": 1000, "duty_percent": 5.0},
     },
 }
 
@@ -65,7 +65,6 @@ def test_pwm_light_loads(tmp_path):
     assert light.channels["laser"].channel == 2
     assert light.channels["laser"].frequency_hz == 1000
     assert light.channels["laser"].duty_percent == 5.0
-    assert light.channels["led"].default_off_required is True
 
 
 def _pwm_with(**overrides):
@@ -181,8 +180,3 @@ def test_station_id_out_of_modbus_range_rejected(tmp_path, bad_station):
         load_devices_config(_write(tmp_path, _pwm_with(station_id=bad_station)))
 
 
-def test_channel_not_default_off_required_rejected(tmp_path):
-    light = copy.deepcopy(PWM_LIGHT)
-    light["channels"]["laser"]["default_off_required"] = False
-    with pytest.raises(ConfigError):
-        load_devices_config(_write(tmp_path, light))

@@ -120,7 +120,7 @@ export function DeviceMonitoring() {
     setTurningOff(true);
     try {
       const response = await apiClient.turnLightOff();
-      if (response.data.status === 'manual') toast.info('光源配置为人工控制，请在实验台手动关闭并确认。');
+      if (response.data.status === 'manual') toast.info(response.data.message);
       else toast.success(response.data.message);
       setShowOffDialog(false);
       await loadStatus(true);
@@ -144,7 +144,7 @@ export function DeviceMonitoring() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div className="flex flex-col gap-1">
           <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">设备监控</h1>
-          <p className="max-w-2xl text-sm text-muted-foreground sm:text-base">读取配置、驱动诊断和设备探测结果；本页不提供任何开灯或开启激光操作。</p>
+          <p className="max-w-2xl text-sm text-muted-foreground sm:text-base">查看设备连接、驱动诊断和光源状态。</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" onClick={() => void loadStatus()} disabled={refreshing || scanning}>
@@ -180,7 +180,7 @@ export function DeviceMonitoring() {
                   <CardTitle>设备概览</CardTitle>
                   <CardDescription>运行配置：{status.runtime_mode}</CardDescription>
                 </div>
-                <Badge variant={realMode ? 'destructive' : 'secondary'}>{realMode ? '真实硬件探测' : '非真机模式 · 不主动连接'}</Badge>
+                <Badge variant={realMode ? 'destructive' : 'secondary'}>{realMode ? '真机' : '非真机，未连接设备'}</Badge>
               </div>
             </CardHeader>
             <CardContent className="p-0">
@@ -194,21 +194,21 @@ export function DeviceMonitoring() {
               <DeviceRow
                 icon={Waves}
                 name="Zolix 光谱仪"
-                description={spectrometerConnected ? status.scan.zolix_devices.join(', ') : '依据 SDK 与 USB 枚举结果判断'}
+                description={spectrometerConnected ? status.scan.zolix_devices.join(', ') : '通过 USB 与厂家 DLL 通信'}
                 status={spectrometerConnected ? '已连接' : realMode ? '未发现' : '未探测'}
                 variant={spectrometerConnected ? 'default' : 'secondary'}
               />
               <DeviceRow
                 icon={Camera}
                 name="DField 相机"
-                description="依据相机 SDK 可加载状态判断"
+                description="通过厂家 DLL 通信"
                 status={cameraConnected ? '可用' : realMode ? '不可用' : '未探测'}
                 variant={cameraConnected ? 'default' : 'secondary'}
               />
               <DeviceRow
                 icon={Lightbulb}
                 name="光源控制"
-                description={light?.manual_control ? '配置为人工控制，软件没有硬件读回' : `控制器类型 ${light?.type ?? '未知'}`}
+                description={light?.manual_control ? '人工控制' : `控制器类型 ${light?.type ?? '未知'}`}
                 status={lightDanger ? '可能开启' : laserState === 'off_confirmed' ? '激光已关闭' : light?.manual_control ? '手动控制' : '状态未知'}
                 variant={lightDanger ? 'destructive' : laserState === 'off_confirmed' ? 'default' : 'outline'}
               />
@@ -219,7 +219,6 @@ export function DeviceMonitoring() {
             {status ? <Card>
               <CardHeader>
                 <CardTitle>驱动与端口诊断</CardTitle>
-                <CardDescription>显示后端实际返回值，不推测驱动版本或硬件能力。</CardDescription>
               </CardHeader>
               <CardContent>
                 <Table>
@@ -240,8 +239,8 @@ export function DeviceMonitoring() {
               <CardHeader>
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="flex flex-col gap-1">
-                    <CardTitle>光源安全状态</CardTitle>
-                    <CardDescription>{light?.hardware_state ? '硬件寄存器读回' : '没有可用的硬件读回'}</CardDescription>
+                    <CardTitle>光源状态</CardTitle>
+                    <CardDescription>{light?.hardware_state ? '控制器寄存器读回' : '无读回'}</CardDescription>
                   </div>
                   <Button variant="destructive" size="sm" onClick={() => setShowOffDialog(true)}>
                     <Lightbulb data-icon="inline-start" />
@@ -268,8 +267,8 @@ export function DeviceMonitoring() {
                 ) : (
                   <Alert>
                     <Lightbulb aria-hidden="true" />
-                    <AlertTitle>{light?.manual_control ? '人工光源控制' : '没有硬件状态'}</AlertTitle>
-                    <AlertDescription>{light?.manual_control ? '请在实验台确认光源状态；Web 端无法读取人工开关。' : '控制器没有返回可验证的寄存器状态。'}</AlertDescription>
+                    <AlertTitle>{light?.manual_control ? '人工控制光源' : '没有寄存器状态'}</AlertTitle>
+                    <AlertDescription>{light?.manual_control ? '人工开关的光源无法读取状态，请在实验台查看。' : '控制器没有返回寄存器状态。'}</AlertDescription>
                   </Alert>
                 )}
               </CardContent>
@@ -283,7 +282,7 @@ export function DeviceMonitoring() {
           <AlertDialogHeader>
             <AlertDialogTitle>关闭全部光源？</AlertDialogTitle>
             <AlertDialogDescription>
-              如果任务正在使用硬件，系统会先请求停止所有任务，再执行全通道关闭和读回确认。此操作只会向安全方向控制光源。
+              有任务运行时先停止所有任务，再关闭全部通道并读回确认。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
