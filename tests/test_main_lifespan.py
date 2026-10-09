@@ -14,7 +14,7 @@ def test_app_starts_when_no_default_devices_config_present(tmp_path, monkeypatch
     monkeypatch.setenv("LAB_AUTO_DEVICES_CONFIG", str(tmp_path / "no-such-devices.yaml"))
 
     with TestClient(main.app) as client:
-        response = client.get("/health")
+        response = client.get("/api/health")
 
     assert response.status_code == 200
 
@@ -25,7 +25,7 @@ def test_app_starts_even_if_devices_config_fails_to_load(tmp_path, monkeypatch):
     monkeypatch.setenv("LAB_AUTO_DEVICES_CONFIG", str(broken))
 
     with TestClient(main.app) as client:
-        response = client.get("/health")
+        response = client.get("/api/health")
 
     assert response.status_code == 200
 
