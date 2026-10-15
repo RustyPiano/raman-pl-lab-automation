@@ -1,5 +1,7 @@
 # 实验室 Raman/PL 自动化平台
 
+本项目已归档。
+
 本项目把老师整理的人工 PL/Raman 测量流程（[SOP](docs/lab-sop-pl-mapping-zolix-ocr.md)）改成由程序控制。程序直接调用四类设备：
 
 - WayneLabs 电动位移台：串口，移动样品。
